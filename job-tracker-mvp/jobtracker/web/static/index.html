@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>Job Tracker</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <script type="module" src="./app.js"></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <a class="brand" href="#/home">
+          <span class="brand-mark">JT</span>
+          <span>Job Tracker</span>
+        </a>
+        <nav aria-label="Main navigation">
+          <a data-route="home" href="#/home">Home</a>
+          <a data-route="new-job" href="#/new-job">Add New Job</a>
+          <a data-route="jobs" href="#/jobs">All Jobs</a>
+          <a data-route="report" href="#/report">PDF Report</a>
+          <a data-route="profile" href="#/profile">User Profile</a>
+        </nav>
+        <div id="apiStatus" class="api-status" aria-live="polite">Ready</div>
+      </aside>
+      <main id="app" class="main" tabindex="-1"></main>
+    </div>
+  </body>
+</html>
