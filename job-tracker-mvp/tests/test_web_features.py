@@ -3,7 +3,7 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from jobtracker.services import UploadedAsset, load_profile, save_profile, store_profile_cv
-from jobtracker.webapp import app
+from jobtracker.webapp import STATIC_DIR, app, root
 
 
 class ProfileTests(unittest.TestCase):
@@ -45,6 +45,13 @@ class RouteTests(unittest.TestCase):
         self.assertIn("/api/profile/cvs", paths)
         self.assertIn("/api/jobs/{job_id}/cv-draft", paths)
         self.assertIn("/api/report", paths)
+
+    def test_root_serves_uncached_versioned_ui(self) -> None:
+        response = root()
+        self.assertEqual(response.headers["cache-control"], "no-store, max-age=0")
+        html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+        self.assertIn("/static/app.js?v=2", html)
+        self.assertIn("/static/styles.css?v=2", html)
 
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import RedirectResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.status import HTTP_201_CREATED
 
@@ -30,6 +30,15 @@ STATIC_DIR = Path(__file__).resolve().parent / "web" / "static"
 
 app = FastAPI(title="jobtracker web backend")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR), check_dir=False), name="static")
+
+
+@app.middleware("http")
+async def disable_ui_cache(request, call_next) -> Response:
+    response = await call_next(request)
+    if request.url.path == "/" or request.url.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+    return response
 
 
 def _split_csv(value: str) -> list[str]:
@@ -116,8 +125,8 @@ def _build_job_payload(flat_data: dict[str, Any], payload: dict[str, Any]) -> di
 
 
 @app.get("/", include_in_schema=False)
-def root() -> RedirectResponse:
-    return RedirectResponse(url="/static/index.html")
+def root() -> FileResponse:
+    return FileResponse(STATIC_DIR / "index.html", headers={"Cache-Control": "no-store, max-age=0"})
 
 
 @app.get("/api/config")
