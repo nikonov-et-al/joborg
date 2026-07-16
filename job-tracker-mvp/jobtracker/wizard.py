@@ -8,7 +8,7 @@ from prompt_toolkit.completion import WordCompleter
 from rich.console import Console
 
 from .files import list_input_files
-from .models import VALID_STATUSES, today_iso
+from .models import VALID_STATUSES, format_date_display, normalize_date_input, today_iso
 
 console = Console()
 
@@ -61,6 +61,16 @@ def ask_list(label: str, default: list[str] | None = None) -> list[str]:
         return []
 
     return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def ask_date(label: str, default: str = "") -> str:
+    shown_default = format_date_display(default)
+    while True:
+        value = ask_text(f"{label} (DD-MM-YYYY)", shown_default)
+        try:
+            return normalize_date_input(value)
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
 
 
 def ask_job_description() -> str:
@@ -161,9 +171,9 @@ def confirm_extracted_fields(data: dict) -> dict:
         "Application method",
         str(data.get("application_method", "")) or "company website",
     )
-    confirmed["date_applied"] = ask_text("Date applied", str(data.get("date_applied", "")) or today_iso())
+    confirmed["date_applied"] = ask_date("Date applied", str(data.get("date_applied", "")) or today_iso())
     confirmed["status"] = ask_choice("Status", VALID_STATUSES, str(data.get("status", "")) or "applied")
-    confirmed["status_date"] = ask_text("Status date", str(data.get("status_date", "")) or today_iso())
+    confirmed["status_date"] = ask_date("Status date", str(data.get("status_date", "")) or today_iso())
     confirmed["contact_person"] = ask_text("Contact person", str(data.get("contact_person", "")))
     confirmed["contact_email"] = ask_text("Contact email", str(data.get("contact_email", "")))
     confirmed["required_skills"] = ask_list(
@@ -180,7 +190,7 @@ def confirm_extracted_fields(data: dict) -> dict:
     )
     confirmed["summary"] = ask_text("Short summary", str(data.get("summary", "")))
     confirmed["next_action"] = ask_text("Next action", str(data.get("next_action", "")))
-    confirmed["next_action_date"] = ask_text("Next action date", str(data.get("next_action_date", "")))
+    confirmed["next_action_date"] = ask_date("Next action date", str(data.get("next_action_date", "")))
     confirmed["relevant_for_arbeitsagentur"] = ask_bool(
         "Relevant for Arbeitsagentur/Arbeitsamt report?",
         bool(data.get("relevant_for_arbeitsagentur", True)),
@@ -201,7 +211,7 @@ def choose_job_folder(jobs: list[tuple[Path, object]]) -> Path:
     choice_to_folder: dict[str, Path] = {}
 
     for index, (folder, job) in enumerate(jobs, start=1):
-        label = f"{index}. {job.date_applied} | {job.company} | {job.role} | {job.status}"
+        label = f"{index}. {format_date_display(job.date_applied)} | {job.company} | {job.role} | {job.status}"
         choices.append(label)
         choice_to_folder[label] = folder
 

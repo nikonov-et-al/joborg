@@ -44,7 +44,9 @@ class RouteTests(unittest.TestCase):
         self.assertIn("/api/profile", paths)
         self.assertIn("/api/profile/cvs", paths)
         self.assertIn("/api/jobs/{job_id}/cv-draft", paths)
+        self.assertIn("/api/jobs/{job_id}/cv-pdf", paths)
         self.assertIn("/api/report", paths)
+        self.assertIn("/api/report/pdf", paths)
 
     def test_root_serves_uncached_versioned_ui(self) -> None:
         response = root()
@@ -52,6 +54,14 @@ class RouteTests(unittest.TestCase):
         html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
         self.assertIn("/static/app.js?v=2", html)
         self.assertIn("/static/styles.css?v=2", html)
+
+    def test_cv_pdf_ui_is_generate_only_and_report_download_uses_server_pdf(self) -> None:
+        app_js = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+        self.assertIn("Generate PDF", app_js)
+        self.assertIn("data-generate-cv-pdf", app_js)
+        self.assertIn("data-download-report", app_js)
+        self.assertIn("/api/report/pdf", app_js)
+        self.assertNotIn("data-print-report", app_js)
 
 
 if __name__ == "__main__":

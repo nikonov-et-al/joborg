@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, asdict
-from datetime import date
+from datetime import date, datetime
 import re
 from typing import Any
 
@@ -23,6 +23,34 @@ VALID_STATUSES = [
 
 def today_iso() -> str:
     return date.today().isoformat()
+
+
+def format_date_display(value: str) -> str:
+    """Format stored ISO dates for people without changing persisted values."""
+    if not value:
+        return value
+
+    try:
+        if "T" in value or " " in value:
+            parsed = datetime.fromisoformat(value)
+            return parsed.strftime("%d-%m-%Y %H:%M")
+        return date.fromisoformat(value).strftime("%d-%m-%Y")
+    except ValueError:
+        return value
+
+
+def normalize_date_input(value: str) -> str:
+    """Accept European or ISO CLI input and return the ISO storage form."""
+    value = value.strip()
+    if not value:
+        return ""
+
+    for pattern in ("%d-%m-%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(value, pattern).date().isoformat()
+        except ValueError:
+            continue
+    raise ValueError(f"Invalid date: {value}. Use DD-MM-YYYY.")
 
 
 def slugify(value: str) -> str:

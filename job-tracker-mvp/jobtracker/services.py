@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
+import re
 from typing import Any, Sequence
 
 import yaml
@@ -9,7 +11,7 @@ import yaml
 from .config import ensure_project_dirs, load_config
 from .files import ensure_dir, unique_path
 from .markdown import append_to_markdown_body, update_markdown_frontmatter, write_markdown_with_frontmatter
-from .models import JobApplication, today_iso
+from .models import JobApplication, format_date_display, today_iso
 from .reports import load_jobs, write_report
 
 
@@ -21,6 +23,30 @@ JOB_FILE_CATEGORIES = {
     "screenshots": "screenshots",
     "job_description": "attachments",
 }
+
+EDITABLE_JOB_FIELDS = {
+    "company",
+    "role",
+    "location",
+    "job_url",
+    "source",
+    "application_method",
+    "date_applied",
+    "status",
+    "status_date",
+    "contact_person",
+    "contact_email",
+    "required_skills",
+    "nice_to_have_skills",
+    "language_requirements",
+    "relevant_for_arbeitsagentur",
+    "summary",
+    "next_action",
+    "next_action_date",
+}
+
+_LIST_JOB_FIELDS = {"required_skills", "nice_to_have_skills", "language_requirements"}
+_DATE_JOB_FIELDS = {"date_applied", "status_date", "next_action_date"}
 
 
 @dataclass(frozen=True)
@@ -73,7 +99,7 @@ See `job_description.md`.
 
 | Date | Event | Evidence |
 |---|---|---|
-| {today_iso()} | Application record created | |
+| {format_date_display(today_iso())} | Application record created | |
 
 # Original pasted job description preview
 
@@ -82,8 +108,11 @@ See `job_description.md`.
 
 
 def write_job_description(job_dir: Path, job_description: str) -> None:
+    content = job_description.strip()
+    if not content.startswith("# Job description"):
+        content = f"# Job description\n\n{content}"
     (job_dir / "job_description.md").write_text(
-        f"# Job description\n\n{job_description.strip()}\n",
+        content.rstrip() + "\n",
         encoding="utf-8",
     )
 
@@ -155,27 +184,69 @@ def apply_job_update(
     status: str | None = None,
     status_date: str | None = None,
     note: str = "",
+    updates: dict[str, Any] | None = None,
+    job_description: str | None = None,
 ) -> tuple[JobApplication, list[str]]:
+    changes = dict(updates or {})
+    if status is not None:
+        changes["status"] = status
+    if status_date is not None:
+        changes["status_date"] = status_date
+
+    unknown = set(changes) - EDITABLE_JOB_FIELDS
+    if unknown:
+        raise ValueError(f"Fields cannot be edited: {', '.join(sorted(unknown))}")
+    if not isinstance(note, str):
+        raise ValueError("note must be text")
+    if job_description is not None and not isinstance(job_description, str):
+        raise ValueError("job_description must be text")
+
+    for field, value in changes.items():
+        if field in _LIST_JOB_FIELDS:
+            if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+                raise ValueError(f"{field} must be a list of strings")
+        elif field == "relevant_for_arbeitsagentur":
+            if not isinstance(value, bool):
+                raise ValueError(f"{field} must be a boolean")
+        elif not isinstance(value, str):
+            raise ValueError(f"{field} must be text")
+
+        if field in _DATE_JOB_FIELDS and value:
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+                raise ValueError(f"{field} must use YYYY-MM-DD")
+            try:
+                date.fromisoformat(value)
+            except ValueError as exc:
+                raise ValueError(f"{field} must use YYYY-MM-DD") from exc
+
+    metadata = job.to_metadata()
+    metadata.update(changes)
+    if not str(metadata["company"]).strip():
+        raise ValueError("company is required")
+    if not str(metadata["role"]).strip():
+        raise ValueError("role is required")
+
+    status_changed = "status" in changes and changes["status"] != job.status
+    if status_changed and not changes.get("status_date"):
+        metadata["status_date"] = today_iso()
+    job = JobApplication.from_metadata(metadata)
+
     stored_paths: list[str] = []
 
     if assets:
         job, stored_paths = attach_assets_to_job(job_dir, job, assets)
 
-    if status:
-        job.status = status
-        job.status_date = status_date or today_iso()
-    elif status_date:
-        job.status_date = status_date
-
     update_markdown_frontmatter(job_dir / "job.md", job.to_metadata())
+    if job_description is not None:
+        write_job_description(job_dir, job_description)
 
     lines: list[str] = []
-    lines.append(f"## Update - {today_iso()}")
+    lines.append(f"## Update - {format_date_display(today_iso())}")
     lines.append("")
 
-    if status:
+    if status_changed:
         lines.append(f"- Status: {job.status}")
-        lines.append(f"- Status date: {job.status_date}")
+        lines.append(f"- Status date: {format_date_display(job.status_date)}")
     if note:
         lines.append(f"- Note: {note}")
     if stored_paths:

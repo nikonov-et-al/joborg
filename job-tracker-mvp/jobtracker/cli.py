@@ -11,11 +11,12 @@ from .config import ensure_project_dirs, load_config
 from .files import copy_or_move_file, ensure_dir
 from .llm import default_extraction, extract_job_data_with_llm, test_llm
 from .markdown import append_to_markdown_body, read_markdown_with_frontmatter, update_markdown_frontmatter, write_markdown_with_frontmatter
-from .models import JobApplication, today_iso
+from .models import JobApplication, format_date_display, today_iso
 from .reports import export_report, load_jobs, write_report
 from .wizard import (
     ask_bool,
     ask_choice,
+    ask_date,
     ask_job_description,
     ask_text,
     choose_file_from_input,
@@ -78,7 +79,7 @@ See `job_description.md`.
 
 | Date | Event | Evidence |
 |---|---|---|
-| {today_iso()} | Application record created | |
+| {format_date_display(today_iso())} | Application record created | |
 
 # Original pasted job description preview
 
@@ -271,7 +272,10 @@ def export(
 
     try:
         created = export_report(
+            jobs_dir=Path(config["paths"]["jobs"]),
             report_md=report_path,
+            applicant_name=config["applicant"].get("name", ""),
+            month=month,
             create_docx=bool(config["export"].get("create_docx", True)),
             create_pdf=bool(config["export"].get("create_pdf", True)),
         )
@@ -394,7 +398,7 @@ def attach() -> None:
             "no_response",
             "closed",
         ], job.status)
-        job.status_date = ask_text("Status date", today_iso())
+        job.status_date = ask_date("Status date", today_iso())
         status_note = f"Status changed to {job.status}"
 
     note = ask_text("Timeline note", status_note or f"Attached {category}")
@@ -405,7 +409,7 @@ def attach() -> None:
     append_to_markdown_body(
         job_md,
         f"""
-## Update — {today_iso()}
+## Update — {format_date_display(today_iso())}
 
 - Category: {category}
 - Note: {note}
@@ -447,7 +451,7 @@ def list_jobs(
     table.add_column("Folder")
 
     for folder, job in jobs:
-        table.add_row(job.date_applied, job.company, job.role, job.status, folder.as_posix())
+        table.add_row(format_date_display(job.date_applied), job.company, job.role, job.status, folder.as_posix())
 
     console.print(table)
 

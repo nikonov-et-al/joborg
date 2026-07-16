@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.status import HTTP_201_CREATED
@@ -12,7 +12,10 @@ from starlette.status import HTTP_201_CREATED
 from .markdown import read_markdown_with_frontmatter
 from .models import JobApplication
 from .llm import generate_cv_draft_with_llm
+from .pdf import render_cv_pdf
+from .reports import build_report_data, report_data_to_dict, render_report_pdf, write_report_data
 from .services import (
+    EDITABLE_JOB_FIELDS,
     UploadedAsset,
     apply_job_update,
     create_job_record,
@@ -198,13 +201,21 @@ def api_update_job(job_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     metadata, _body = read_markdown_with_frontmatter(job_md)
     job = JobApplication.from_metadata(metadata)
 
+    allowed = EDITABLE_JOB_FIELDS | {"job_description", "note"}
+    unknown = set(payload) - allowed
+    if unknown:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Fields cannot be edited: {', '.join(sorted(unknown))}",
+        )
+
     try:
         job, _stored = apply_job_update(
             job_dir,
             job,
-            status=payload.get("status"),
-            status_date=payload.get("status_date"),
-            note=str(payload.get("note", "")),
+            updates={key: payload[key] for key in EDITABLE_JOB_FIELDS if key in payload},
+            note=payload.get("note", ""),
+            job_description=payload.get("job_description") if "job_description" in payload else None,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -356,14 +367,74 @@ async def api_attach_job_compat(
     return await _attach_impl(job_id, payload, status, status_date, note, files, file_categories)
 
 
+def _report_period_key(year: str, month_number: str) -> str:
+    if year and month_number:
+        return f"{year}-{month_number}"
+    if year:
+        return year
+    if month_number:
+        return f"all-years-{month_number}"
+    return ""
+
+
 @app.post("/api/report")
-def api_report(month: str | None = None) -> dict[str, Any]:
+def api_report(
+    month: str | None = None,
+    year: str | None = None,
+    month_number: str | None = None,
+) -> dict[str, Any]:
     context = load_project_context()
-    report_path = write_project_report(context, month=month)
+    try:
+        data = build_report_data(
+            context.jobs_dir,
+            applicant_name=str(context.config.get("applicant", {}).get("name", "")),
+            month=month,
+            year=year,
+            month_number=month_number,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    period_key = _report_period_key(data.year, data.month_number)
+    report_path = (
+        context.reports_dir / period_key / "report.md"
+        if period_key
+        else context.reports_dir / "report.md"
+    )
+    write_report_data(data, report_path)
     return {
         "report_path": report_path.as_posix(),
         "content": report_path.read_text(encoding="utf-8"),
+        "data": report_data_to_dict(data),
     }
+
+
+@app.get("/api/report/pdf")
+def api_report_pdf(
+    month: str | None = None,
+    year: str | None = None,
+    month_number: str | None = None,
+) -> Response:
+    context = load_project_context()
+    try:
+        data = build_report_data(
+            context.jobs_dir,
+            applicant_name=str(context.config.get("applicant", {}).get("name", "")),
+            month=month,
+            year=year,
+            month_number=month_number,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    pdf = render_report_pdf(data)
+    period_key = _report_period_key(data.year, data.month_number)
+    suffix = f"-{period_key}" if period_key else ""
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="report{suffix}.pdf"'},
+    )
 
 
 @app.get("/api/profile")
@@ -422,6 +493,46 @@ def api_generate_cv_draft(job_id: str) -> dict[str, Any]:
     draft_path.parent.mkdir(parents=True, exist_ok=True)
     draft_path.write_text(content, encoding="utf-8")
     return {"job_id": job_id, "content": content, "path": draft_path.relative_to(job_dir).as_posix()}
+
+
+@app.post("/api/jobs/{job_id}/cv-pdf")
+def api_generate_cv_pdf(job_id: str, payload: dict[str, Any] | None = Body(default=None)) -> Response:
+    context = load_project_context()
+    job_dir = context.jobs_dir / job_id
+    job_md = job_dir / "job.md"
+    if not job_md.exists():
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    metadata, _body = read_markdown_with_frontmatter(job_md)
+    draft_path = job_dir / "cv" / "generated_cv.md"
+
+    content = None
+    if isinstance(payload, dict):
+        content = payload.get("content")
+
+    if content is None:
+        content = draft_path.read_text(encoding="utf-8") if draft_path.exists() else ""
+    elif not isinstance(content, str):
+        raise HTTPException(status_code=422, detail="content must be text")
+
+    content = content.strip()
+    if not content:
+        raise HTTPException(status_code=422, detail="CV content is empty")
+
+    try:
+        pdf = render_cv_pdf(
+            content,
+            applicant_name=str(context.config.get("applicant", {}).get("name", "")),
+            job_title=str(metadata.get("role", "")),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": 'attachment; filename="generated_cv.pdf"'},
+    )
 
 
 @app.put("/api/jobs/{job_id}/cv-draft")

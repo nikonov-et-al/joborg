@@ -22,6 +22,7 @@ h1 { margin-bottom: .35rem; font-size: clamp(1.8rem, 3vw, 2.6rem); }
 h2 { margin-bottom: .25rem; }
 
 .app-shell { min-height: 100vh; display: grid; grid-template-columns: 230px minmax(0, 1fr); }
+.sidebar, .main { min-width: 0; }
 .sidebar {
   position: sticky; top: 0; height: 100vh; padding: 1.2rem; background: #172033; color: #fff;
   display: flex; flex-direction: column; gap: 1.5rem;
@@ -91,6 +92,7 @@ label { display: grid; gap: .35rem; color: #39445a; font-weight: 650; }
 .job-row small { margin-top: .15rem; }
 .detail-title { display: flex; justify-content: space-between; gap: 1rem; align-items: flex-start; border-bottom: 1px solid var(--line); padding-bottom: .8rem; }
 .detail-title p { color: var(--muted); margin-bottom: 0; }
+.detail-actions { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; justify-content: flex-end; }
 .meta-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: .55rem; margin: .9rem 0; }
 .meta-grid div { padding: .65rem; background: #f8f9fc; border-radius: 8px; }
 .meta-grid span, .meta-grid strong { display: block; }
@@ -110,7 +112,12 @@ summary { cursor: pointer; font-weight: 800; margin-bottom: .65rem; }
 .report-controls { margin-bottom: 1rem; }
 .report-controls label { width: 190px; }
 .report { max-width: 1000px; margin: auto; }
-.report-stats { display: flex; flex-wrap: wrap; gap: .65rem; }
+.report-stats { display: grid; gap: .65rem; margin-bottom: 1.25rem; }
+.report-stat { display: grid; grid-template-columns: minmax(150px, 240px) minmax(160px, 1fr); align-items: center; gap: .75rem; }
+.report-stat-label { display: flex; justify-content: space-between; gap: .5rem; }
+.report-bar { height: .9rem; overflow: hidden; border-radius: 999px; background: var(--accent-soft); }
+.report-bar span { display: block; height: 100%; border-radius: inherit; background: var(--accent); }
+.report-table-wrap { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; }
 th, td { padding: .6rem; border: 1px solid var(--line); text-align: left; vertical-align: top; }
 th { background: #f3f5f9; }
@@ -132,8 +139,10 @@ th { background: #f3f5f9; }
   .page-head { align-items: stretch; }
   .stats-grid { grid-template-columns: repeat(2, 1fr); }
   .form-grid, .filters, .meta-grid { grid-template-columns: 1fr; }
+  .edit-job-grid .span-2 { grid-column: auto; }
   .span-2 { grid-column: auto; }
   .queued-file, .job-row { grid-template-columns: 1fr; }
+  .report-stat { grid-template-columns: 1fr; gap: .3rem; }
 }
 
 @media print {

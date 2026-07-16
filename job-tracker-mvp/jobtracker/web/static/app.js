@@ -6,6 +6,10 @@ const STATUSES = [
 ];
 const CATEGORIES = ["attachments", "cv", "motivation_letter", "job_description", "evidence", "screenshots"];
 const CLOSED = new Set(["rejected", "withdrawn", "no_response", "closed"]);
+const MONTHS = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
 const state = { jobs: [], detail: null, newFiles: [], profile: null, report: null, notice: "" };
 const app = document.querySelector("#app");
 const apiStatus = document.querySelector("#apiStatus");
@@ -16,6 +20,17 @@ const esc = (value = "") => String(value)
   .replaceAll('"', "&quot;").replaceAll("'", "&#39;");
 const label = (value = "") => String(value).replaceAll("_", " ").replace(/\b\w/g, c => c.toUpperCase());
 const list = value => Array.isArray(value) ? value : [];
+const csvList = value => String(value || "").split(",").map(item => item.trim()).filter(Boolean);
+
+function displayDate(value = "") {
+  const text = String(value);
+  const match = /^(\d{4})-(\d{2})-(\d{2})(.*)$/.exec(text);
+  if (!match) return text;
+  const [, year, month, day, suffix] = match;
+  const parsed = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
+  if (parsed.getUTCFullYear() !== Number(year) || parsed.getUTCMonth() + 1 !== Number(month) || parsed.getUTCDate() !== Number(day)) return text;
+  return `${day}-${month}-${year}${suffix}`;
+}
 
 function setStatus(text, tone = "") {
   apiStatus.textContent = text;
@@ -149,7 +164,7 @@ function jobListRows(jobs) {
   return jobs.map(job => `
     <button class="job-row ${state.detail?.id === job.id ? "active" : ""}" data-job="${esc(job.id)}">
       <span><strong>${esc(job.company || "Untitled")}</strong><small>${esc(job.role)} · ${esc(job.location)}</small></span>
-      <span>${esc(job.date_applied)}</span><span class="pill">${label(job.status)}</span>
+      <span>${esc(displayDate(job.date_applied))}</span><span class="pill">${label(job.status)}</span>
     </button>`).join("");
 }
 
@@ -183,12 +198,12 @@ async function selectJob(id) {
 
 function detailHtml(job) {
   const metadata = [
-    ["Applied", job.date_applied], ["Status date", job.status_date], ["Location", job.location],
+    ["Applied", displayDate(job.date_applied)], ["Status date", displayDate(job.status_date)], ["Location", job.location],
     ["Source", job.source], ["Method", job.application_method], ["Contact", job.contact_person],
-    ["Email", job.contact_email], ["Next action", job.next_action], ["Next date", job.next_action_date],
+    ["Email", job.contact_email], ["Next action", job.next_action], ["Next date", displayDate(job.next_action_date)],
   ].filter(([, value]) => value);
   return `
-    <div class="detail-title"><div><p class="eyebrow">Selected job</p><h2>${esc(job.company)}</h2><p>${esc(job.role)}</p></div><span class="pill">${label(job.status)}</span></div>
+    <div class="detail-title"><div><p class="eyebrow">Selected job</p><h2>${esc(job.company)}</h2><p>${esc(job.role)}</p></div><div class="detail-actions"><span class="pill">${label(job.status)}</span><button class="secondary" data-edit-job>Edit Job</button></div></div>
     <div class="meta-grid">${metadata.map(([key, value]) => `<div><span>${esc(key)}</span><strong>${esc(value)}</strong></div>`).join("")}</div>
     ${job.job_url ? `<p><a href="${esc(job.job_url)}" target="_blank" rel="noreferrer">Open job posting</a></p>` : ""}
     <div class="inline-form"><select id="detailStatus">${statusOptions(job.status)}</select><button data-save-status>Save status</button></div>
@@ -203,10 +218,37 @@ function detailHtml(job) {
       <div class="attach-row"><input id="attachFiles" type="file" multiple><select id="attachCategory">${CATEGORIES.map(c => `<option value="${c}">${label(c)}</option>`).join("")}</select><button data-attach>Attach</button></div>
     </details>
     <details open><summary>Generated CV</summary>
-      <div class="actions"><button data-generate-cv>Generate CV</button><button class="secondary" data-save-cv>Save draft</button><button class="secondary" data-print-cv>Print / PDF</button></div>
+      <div class="actions"><button data-generate-cv>Generate CV</button><button class="secondary" data-save-cv>Save draft</button><button class="secondary" data-generate-cv-pdf>Generate PDF</button></div>
       <textarea id="cvDraft" class="cv-editor" rows="22" placeholder="Generated CV appears here.">${esc(job.cv_draft)}</textarea>
-      <article id="cvPrint" class="print-sheet"><pre class="document">${esc(job.cv_draft)}</pre></article>
     </details>`;
+}
+
+function editJobHtml(job) {
+  return `<form id="editJobForm" class="form">
+    <div class="detail-title"><div><p class="eyebrow">Edit job</p><h2>${esc(job.company)}</h2><p>Job ID remains unchanged.</p></div></div>
+    <div class="form-grid edit-job-grid">
+      <label>Company<input name="company" value="${esc(job.company)}" required></label>
+      <label>Role<input name="role" value="${esc(job.role)}" required></label>
+      <label>Location<input name="location" value="${esc(job.location)}"></label>
+      <label>Date applied<input name="date_applied" type="date" value="${esc(job.date_applied)}"></label>
+      <label>Status<select name="status">${statusOptions(job.status)}</select></label>
+      <label>Status date<input name="status_date" type="date" value="${esc(job.status_date)}"></label>
+      <label>Source<input name="source" value="${esc(job.source)}"></label>
+      <label>Method<input name="application_method" value="${esc(job.application_method)}"></label>
+      <label class="span-2">Job URL<input name="job_url" type="url" value="${esc(job.job_url)}"></label>
+      <label>Contact person<input name="contact_person" value="${esc(job.contact_person)}"></label>
+      <label>Contact email<input name="contact_email" type="email" value="${esc(job.contact_email)}"></label>
+      <label>Next action<input name="next_action" value="${esc(job.next_action)}"></label>
+      <label>Next action date<input name="next_action_date" type="date" value="${esc(job.next_action_date)}"></label>
+      <label class="span-2">Required skills<input name="required_skills" value="${esc(list(job.required_skills).join(", "))}" placeholder="Python, SQL"></label>
+      <label class="span-2">Nice-to-have skills<input name="nice_to_have_skills" value="${esc(list(job.nice_to_have_skills).join(", "))}"></label>
+      <label class="span-2">Languages<input name="language_requirements" value="${esc(list(job.language_requirements).join(", "))}" placeholder="German, English"></label>
+    </div>
+    <label>Summary<textarea name="summary" rows="4">${esc(job.summary)}</textarea></label>
+    <label>Job description<textarea name="job_description" rows="14">${esc(job.job_description)}</textarea></label>
+    <label class="check"><input name="relevant_for_arbeitsagentur" type="checkbox" ${job.relevant_for_arbeitsagentur ? "checked" : ""}>Relevant for Arbeitsagentur</label>
+    <div class="actions"><button type="submit">Save</button><button type="button" class="secondary" data-cancel-edit>Cancel</button></div>
+  </form>`;
 }
 
 function filterJobs() {
@@ -220,25 +262,48 @@ function filterJobs() {
 }
 
 function renderReport() {
+  const years = [...new Set(state.jobs.map(job => /^(\d{4})-/.exec(job.date_applied || "")?.[1]).filter(Boolean))]
+    .sort((a, b) => Number(b) - Number(a));
   app.innerHTML = `
-    ${pageHead("PDF Report", "Generate a printable application report.")}
+    ${pageHead("PDF Report", "Generate report and download server PDF.")}
     <section class="card">
-      <div class="report-controls"><label>Month<input id="reportMonth" type="month"></label><button data-report-generate>Generate report</button><button class="secondary" data-print-report disabled>Print / Save PDF</button></div>
+      <div class="report-controls">
+        <label>Month<select id="reportMonth"><option value="">All</option>${MONTHS.map((month, index) => `<option value="${String(index + 1).padStart(2, "0")}">${month}</option>`).join("")}</select></label>
+        <label>Year<select id="reportYear"><option value="">All</option>${years.map(year => `<option value="${year}">${year}</option>`).join("")}</select></label>
+        <button data-report-generate>Generate report</button><a class="button secondary" data-download-report href="/api/report/pdf" target="_blank" rel="noreferrer">Download PDF</a>
+      </div>
       <div id="reportArea" class="empty">Generate report to preview it.</div>
     </section>`;
 }
 
-function reportHtml(month = "") {
-  const jobs = month ? state.jobs.filter(job => job.date_applied?.startsWith(month)) : state.jobs;
-  const counts = jobs.reduce((result, job) => ({ ...result, [job.status]: (result[job.status] || 0) + 1 }), {});
+function reportQuery() {
+  const query = new URLSearchParams();
+  const year = document.querySelector("#reportYear")?.value;
+  const month = document.querySelector("#reportMonth")?.value;
+  if (year) query.set("year", year);
+  if (month) query.set("month_number", month);
+  return query.toString();
+}
+
+function reportHtml(report) {
+  const data = report?.data || { rows: [], status_counts: [], total: 0, generated_at: "", applicant_name: "", month: "" };
+  const total = Number(data.total) || 0;
+  const statusBars = total ? list(data.status_counts).filter(([, rawCount]) => Number(rawCount) > 0).map(([status, rawCount]) => {
+    const count = Number(rawCount) || 0;
+    const percent = count / total * 100;
+    const percentText = percent.toFixed(1);
+    return `<div class="report-stat"><div class="report-stat-label"><span>${label(status)}:</span><strong>${esc(count)} (${percentText}%)</strong></div><div class="report-bar" role="img" aria-label="${esc(`${label(status)}: ${count} of ${total} applications, ${percentText} percent`)}"><span style="width:${percentText}%"></span></div></div>`;
+  }).join("") : '<p class="muted">No applications in this period.</p>';
+  const period = data.period_label || data.month || "All";
   return `<article id="reportPrint" class="print-sheet report">
-    <h1>Job Application Report</h1><p>Generated: ${new Date().toLocaleString()}</p>
-    ${month ? `<p>Month: ${esc(month)}</p>` : ""}
-    <h2>Summary</h2><p>Total applications: <strong>${jobs.length}</strong></p>
-    <div class="report-stats">${Object.entries(counts).map(([status, count]) => `<span>${label(status)}: <strong>${count}</strong></span>`).join("")}</div>
+    <h1>Job Application Report</h1><p>Generated: ${esc(displayDate(data.generated_at))}</p>
+    ${data.applicant_name ? `<p>Applicant: ${esc(data.applicant_name)}</p>` : ""}
+    <p>Period: ${esc(period)}</p>
+    <h2>Summary</h2><p>Total applications: <strong>${esc(data.total)}</strong></p>
+    <div class="report-stats">${statusBars}</div>
     <h2>Applications</h2>
-    <table><thead><tr><th>Date</th><th>Company</th><th>Role</th><th>Location</th><th>Status</th></tr></thead>
-    <tbody>${jobs.map(job => `<tr><td>${esc(job.date_applied)}</td><td>${esc(job.company)}</td><td>${esc(job.role)}</td><td>${esc(job.location)}</td><td>${label(job.status)}</td></tr>`).join("")}</tbody></table>
+    <div class="report-table-wrap"><table><thead><tr><th>Date</th><th>Company</th><th>Role</th><th>Location</th><th>Status</th></tr></thead>
+    <tbody>${list(data.rows).map(row => `<tr><td>${esc(displayDate(row.date))}</td><td>${esc(row.company)}</td><td>${esc(row.role)}</td><td>${esc(row.location)}</td><td>${label(row.status)}</td></tr>`).join("") || '<tr><td colspan="5" class="muted">No applications.</td></tr>'}</tbody></table></div>
   </article>`;
 }
 
@@ -261,12 +326,6 @@ async function renderProfile() {
       <form id="profileCvForm" class="upload-line"><input name="files" type="file" accept=".pdf,.docx" multiple required><button>Upload</button></form>
       <ul class="file-links">${list(state.profile.cv_files).map(name => `<li>${esc(name)}</li>`).join("") || "<li>No CV files uploaded.</li>"}</ul>
     </section>`;
-}
-
-function printElement(element) {
-  document.querySelectorAll(".print-target").forEach(item => item.classList.remove("print-target"));
-  element?.classList.add("print-target");
-  window.print();
 }
 
 async function navigate() {
@@ -296,10 +355,6 @@ async function navigate() {
 
 app.addEventListener("input", event => {
   if (event.target.matches("#jobSearch, #jobStatus")) filterJobs();
-  if (event.target.matches("#cvDraft")) {
-    const preview = document.querySelector("#cvPrint pre");
-    if (preview) preview.textContent = event.target.value;
-  }
 });
 
 app.addEventListener("change", event => {
@@ -328,6 +383,14 @@ app.addEventListener("click", async event => {
     await request(`/jobs/${encodeURIComponent(state.detail.id)}`, { method: "PATCH", body: JSON.stringify({ status }) });
     await loadJobs(); await selectJob(state.detail.id); return;
   }
+  if (event.target.closest("[data-edit-job]")) {
+    document.querySelector("#jobDetail").innerHTML = editJobHtml(state.detail);
+    return;
+  }
+  if (event.target.closest("[data-cancel-edit]")) {
+    document.querySelector("#jobDetail").innerHTML = detailHtml(state.detail);
+    return;
+  }
   if (event.target.closest("[data-attach]")) {
     const files = document.querySelector("#attachFiles").files;
     if (!files.length) return setStatus("Choose files first", "bad");
@@ -338,11 +401,10 @@ app.addEventListener("click", async event => {
     await selectJob(state.detail.id); return;
   }
   if (event.target.closest("[data-generate-cv]")) {
-    setStatus("Generating CV…", "busy");
+    setStatus("Generating CV...", "busy");
     try {
       const result = await request(`/jobs/${encodeURIComponent(state.detail.id)}/cv-draft`, { method: "POST" });
       document.querySelector("#cvDraft").value = result.content;
-      document.querySelector("#cvPrint pre").textContent = result.content;
       setStatus("CV generated", "ok");
     } catch (error) { setStatus(error.message, "bad"); }
     return;
@@ -352,24 +414,67 @@ app.addEventListener("click", async event => {
     await request(`/jobs/${encodeURIComponent(state.detail.id)}/cv-draft`, { method: "PUT", body: JSON.stringify({ content }) });
     setStatus("CV saved", "ok"); return;
   }
-  if (event.target.closest("[data-print-cv]")) return printElement(document.querySelector("#cvPrint"));
-  if (event.target.closest("[data-report-generate]")) {
-    const month = document.querySelector("#reportMonth").value;
-    setStatus("Generating report…", "busy");
+  if (event.target.closest("[data-generate-cv-pdf]")) {
+    setStatus("Generating PDF...", "busy");
     try {
-      state.report = await request(`/report${month ? `?month=${encodeURIComponent(month)}` : ""}`, { method: "POST" });
+      const response = await fetch(`${API}/jobs/${encodeURIComponent(state.detail.id)}/cv-pdf`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/pdf" },
+        body: JSON.stringify({ content: document.querySelector("#cvDraft").value }),
+      });
+      if (!response.ok) {
+        let message = await response.text();
+        try { message = JSON.parse(message).detail || message; } catch {}
+        throw new Error(message || `${response.status} ${response.statusText}`);
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = "generated_cv.pdf";
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+      setStatus("CV PDF downloaded", "ok");
+    } catch (error) {
+      setStatus(error.message, "bad");
+    }
+    return;
+  }
+  if (event.target.closest("[data-report-generate]")) {
+    const query = reportQuery();
+    setStatus("Generating report...", "busy");
+    try {
+      state.report = await request(`/report${query ? `?${query}` : ""}`, { method: "POST" });
       document.querySelector("#reportArea").className = "";
-      document.querySelector("#reportArea").innerHTML = reportHtml(month);
-      document.querySelector("[data-print-report]").disabled = false;
+      document.querySelector("#reportArea").innerHTML = reportHtml(state.report);
+      document.querySelector("[data-download-report]").href = `${API}/report/pdf${query ? `?${query}` : ""}`;
       setStatus("Report generated", "ok");
     } catch (error) { setStatus(error.message, "bad"); }
     return;
   }
-  if (event.target.closest("[data-print-report]")) printElement(document.querySelector("#reportPrint"));
 });
 
 app.addEventListener("submit", async event => {
   event.preventDefault();
+  if (event.target.id === "editJobForm") {
+    const id = state.detail.id;
+    const raw = new FormData(event.target);
+    const payload = Object.fromEntries(raw.entries());
+    ["required_skills", "nice_to_have_skills", "language_requirements"].forEach(key => { payload[key] = csvList(raw.get(key)); });
+    payload.relevant_for_arbeitsagentur = raw.get("relevant_for_arbeitsagentur") === "on";
+    if (payload.status !== state.detail.status && payload.status_date === state.detail.status_date) delete payload.status_date;
+    setStatus("Saving job...", "busy");
+    try {
+      await request(`/jobs/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(payload) });
+      await loadJobs();
+      await selectJob(id);
+      filterJobs();
+      setStatus("Job saved", "ok");
+    } catch (error) { setStatus(error.message, "bad"); }
+    return;
+  }
   if (event.target.id === "jobForm") {
     const generateCv = Boolean(event.submitter?.matches("[data-create-cv]"));
     const raw = new FormData(event.target);
@@ -380,11 +485,11 @@ app.addEventListener("submit", async event => {
     data.append("job_description", payload.job_description || "");
     state.newFiles.forEach(item => data.append("files", item.file, item.file.name));
     data.append("file_categories", JSON.stringify(state.newFiles.map(item => ({ name: item.file.name, category: item.category }))));
-    setStatus("Creating job…", "busy");
+    setStatus("Creating job...", "busy");
     try {
       const created = await request("/jobs", { method: "POST", body: data });
       if (generateCv) {
-        setStatus("Generating CV…", "busy");
+        setStatus("Generating CV...", "busy");
         try {
           await request(`/jobs/${encodeURIComponent(created.id)}/cv-draft`, { method: "POST" });
         } catch (error) {
@@ -412,5 +517,4 @@ app.addEventListener("submit", async event => {
 });
 
 window.addEventListener("hashchange", navigate);
-window.addEventListener("afterprint", () => document.querySelectorAll(".print-target").forEach(item => item.classList.remove("print-target")));
 navigate();

@@ -21,6 +21,48 @@ Rules:
 - The JSON must use exactly the requested keys.
 """.strip()
 
+CV_DRAFT_SYSTEM_PROMPT = """
+You write truthful CVs.
+Return Markdown only.
+Never invent facts.
+Never include Certifications or Languages & Certifications sections.
+Follow the user’s section order and formatting constraints exactly.
+""".strip()
+
+
+def build_cv_draft_prompt(*, profile: dict[str, Any], job_description: str, job: dict[str, Any]) -> str:
+    return f"""
+Create a truthful CV tailored to this job.
+
+Rules:
+- Return Markdown only.
+- No tables, icons, or images.
+- No code fences.
+- Keep it factual; do not invent employers, dates, degrees, skills, or achievements.
+- Use exactly these sections in this order: Summary, Experience, Education, Skills, Projects, Languages.
+- Use Markdown level-2 section headings exactly: ## Summary, ## Experience, ## Education, ## Skills, ## Projects, ## Languages.
+- Do not include Certifications, Languages & Certifications, or any other section.
+- Format for one A4 page with body text at 11pt and margins of 8-10mm.
+- Prefer scannable content that can fit on one page.
+- Summary: max 350 characters.
+- Experience: max 3 jobs; max 4 bullets per job; fewer bullets if needed for one page; max 120 characters per bullet.
+- Bold employer names in Experience with Markdown, for example **Employer**.
+- Education: max 2 entries; one compact line per entry; bold university names with Markdown.
+- Skills: bullet list grouped by subtype, for example - **ML/Data:** Python, pandas.
+- Include all job-required skills truthfully supported by PROFILE facts; do not invent unsupported skills.
+- Projects: max 2 bullets; include only highly relevant projects.
+- Languages: one compact line.
+
+PROFILE:
+{json.dumps(profile, ensure_ascii=False, indent=2)}
+
+JOB:
+{json.dumps(job, ensure_ascii=False, indent=2)}
+
+JOB DESCRIPTION:
+{job_description}
+""".strip()
+
 
 def _extract_json_object(text: str) -> dict[str, Any]:
     """
@@ -188,26 +230,12 @@ def generate_cv_draft_with_llm(
         base_url=llm_config.get("base_url", "http://localhost:11434/v1"),
         api_key=llm_config.get("api_key", "local-not-needed"),
     )
-    prompt = f"""
-Create a truthful, ATS-friendly CV draft tailored to this job.
-Return Markdown only.
-Do not invent employers, dates, qualifications, skills, or achievements.
-Prioritize relevant profile facts and use concise bullet points.
-
-PROFILE:
-{json.dumps(profile, ensure_ascii=False, indent=2)}
-
-JOB:
-{json.dumps(job, ensure_ascii=False, indent=2)}
-
-JOB DESCRIPTION:
-{job_description}
-""".strip()
+    prompt = build_cv_draft_prompt(profile=profile, job_description=job_description, job=job)
     response = client.chat.completions.create(
         model=llm_config["model"],
         temperature=0.2,
         messages=[
-            {"role": "system", "content": "You write factual CVs. Never invent missing facts."},
+            {"role": "system", "content": CV_DRAFT_SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
         ],
     )
