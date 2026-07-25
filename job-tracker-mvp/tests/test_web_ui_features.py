@@ -1,5 +1,15 @@
+from contextlib import closing
+import json
 from pathlib import Path
+import sqlite3
+import tempfile
 import unittest
+
+from fastapi.testclient import TestClient
+
+from jobtracker.repositories import build_application_service
+from jobtracker.services import ProjectContext
+from jobtracker.webapp import create_app
 
 
 STATIC_DIR = Path(__file__).parents[1] / "jobtracker" / "web" / "static"
@@ -10,6 +20,7 @@ class WebUiFeatureTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.app_js = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
         cls.styles = (STATIC_DIR / "styles.css").read_text(encoding="utf-8")
+        cls.index_html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
 
     def test_dates_are_formatted_only_for_display(self) -> None:
         self.assertIn("function displayDate", self.app_js)
@@ -52,6 +63,148 @@ class WebUiFeatureTests(unittest.TestCase):
         self.assertIn("data-save-status", self.app_js)
         self.assertIn("data-attach", self.app_js)
         self.assertIn("data-generate-cv", self.app_js)
+
+    def test_add_job_sends_description_only_as_multipart_field(self) -> None:
+        submit = self.app_js.split('if (event.target.id === "jobForm")', 1)[1]
+        self.assertIn('const jobDescription = payload.job_description || "";', submit)
+        self.assertIn("delete payload.job_description;", submit)
+        self.assertIn('data.append("job_description", jobDescription);', submit)
+        self.assertLess(
+            submit.index("delete payload.job_description;"),
+            submit.index('data.append("payload", JSON.stringify(payload));'),
+        )
+        self.assertLess(
+            submit.index('await request("/jobs", { method: "POST", body: data });'),
+            submit.index('/cv-draft`, { method: "POST" }'),
+        )
+
+    def test_record_load_errors_are_visible_and_actionable(self) -> None:
+        self.assertIn('/jobs?include_errors=true', self.app_js)
+        self.assertIn("state.loadErrors", self.app_js)
+        self.assertIn("job record(s) failed to load", self.app_js)
+        self.assertIn("error.path", self.app_js)
+        self.assertIn("error.code", self.app_js)
+        self.assertIn("error.message", self.app_js)
+        self.assertIn("job doctor", self.app_js)
+
+    def test_profile_uses_required_canonical_name_and_email_fields(self) -> None:
+        profile_source = self.app_js.split("async function renderProfile()", 1)[1].split(
+            "const desktopApi", 1
+        )[0]
+        self.assertIn('name="given_name"', profile_source)
+        self.assertIn('name="family_name"', profile_source)
+        self.assertIn('name="email" type="email"', profile_source)
+        self.assertIn("required", profile_source)
+        self.assertIn("Previous full name", profile_source)
+        self.assertNotIn('name="name"', profile_source)
+
+    def test_settings_uses_desktop_bridge_and_does_not_require_job_loading(self) -> None:
+        self.assertIn('data-route="settings"', self.index_html)
+        self.assertIn("window.pywebview?.api", self.app_js)
+        self.assertIn("Workspace management requires desktop app", self.app_js)
+        for method in (
+            "get_workspaces",
+            "choose_workspace_folder",
+            "create_workspace",
+            "open_workspace",
+            "activate_workspace",
+            "forget_workspace",
+        ):
+            self.assertIn(f'"{method}"', self.app_js)
+        navigation = self.app_js.split("async function navigate()", 1)[1].split(
+            'app.addEventListener("input"', 1
+        )[0]
+        self.assertIn('const jobRoutes = new Set(["home", "new-job", "jobs", "report"])', navigation)
+        self.assertIn("if (jobRoutes.has(route) && !state.jobs.length) await loadJobs()", navigation)
+        self.assertNotIn('request("/workspaces', self.app_js)
+        self.assertIn(".workspace-row", self.styles)
+
+
+class AddJobApiRegressionTests(unittest.TestCase):
+    def test_description_and_attachment_round_trip_without_weakening_metadata_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            for name in ("input", "jobs", "reports", "profile", "files"):
+                (root / name).mkdir()
+            database = root / "jobtracker.sqlite3"
+            context = ProjectContext(
+                config={"applicant": {"name": ""}, "export": {}},
+                input_dir=root / "input",
+                jobs_dir=root / "jobs",
+                reports_dir=root / "reports",
+                profile_dir=root / "profile",
+                database=database,
+                files_dir=root / "files",
+            )
+            client = TestClient(create_app(build_application_service(context)))
+            description = "First line.\n\nSecond line with umlaut: Gr\u00fc\u00dfe."
+            response = client.post(
+                "/api/jobs",
+                data={
+                    "payload": json.dumps(
+                        {
+                            "company": "Example",
+                            "role": "Engineer",
+                            "date_applied": "2026-07-21",
+                        }
+                    ),
+                    "job_description": description,
+                    "file_categories": json.dumps(
+                        [{"name": "proof.txt", "category": "evidence"}]
+                    ),
+                },
+                files={"files": ("proof.txt", b"proof", "text/plain")},
+            )
+
+            self.assertEqual(response.status_code, 201, response.text)
+            job_id = response.json()["id"]
+            detail = client.get(f"/api/jobs/{job_id}")
+            self.assertEqual(detail.status_code, 200, detail.text)
+            self.assertEqual(detail.json()["job_description"], description)
+            self.assertEqual(len(detail.json()["files"]["evidence"]), 1)
+
+            empty = client.post(
+                "/api/jobs",
+                data={
+                    "payload": json.dumps(
+                        {
+                            "company": "Empty",
+                            "role": "Description",
+                            "date_applied": "2026-07-21",
+                        }
+                    )
+                },
+            )
+            self.assertEqual(empty.status_code, 201, empty.text)
+
+            unknown = client.post(
+                "/api/jobs",
+                data={
+                    "payload": json.dumps(
+                        {
+                            "company": "Bad",
+                            "role": "Metadata",
+                            "date_applied": "2026-07-21",
+                            "unknown": True,
+                        }
+                    )
+                },
+            )
+            self.assertEqual(unknown.status_code, 422, unknown.text)
+
+            with closing(sqlite3.connect(database)) as connection:
+                stored_description = connection.execute(
+                    "SELECT job_description FROM applications WHERE id = ?", (job_id,)
+                ).fetchone()[0]
+                categories = connection.execute(
+                    "SELECT category FROM documents WHERE application_id = ?", (job_id,)
+                ).fetchall()
+                application_count = connection.execute(
+                    "SELECT COUNT(*) FROM applications"
+                ).fetchone()[0]
+            self.assertEqual(stored_description, description)
+            self.assertEqual(categories, [("evidence",)])
+            self.assertEqual(application_count, 2)
 
 
 if __name__ == "__main__":

@@ -2,7 +2,13 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
-from jobtracker.services import UploadedAsset, load_profile, save_profile, store_profile_cv
+from jobtracker.services import (
+    UploadedAsset,
+    load_profile,
+    profile_display_name,
+    save_profile,
+    store_profile_cv,
+)
 from jobtracker.webapp import STATIC_DIR, app, root
 
 
@@ -29,6 +35,38 @@ class ProfileTests(unittest.TestCase):
             self.assertEqual(filename, "resume.pdf")
             self.assertEqual(load_profile(profile_dir)["cv_files"], ["resume.pdf"])
 
+    def test_split_name_wins_and_unknown_legacy_fields_survive_save(self) -> None:
+        with TemporaryDirectory() as temp:
+            profile_dir = Path(temp)
+            save_profile(
+                profile_dir,
+                {
+                    "personal": {"name": "Legacy Name", "custom": "keep"},
+                    "skills": [],
+                    "experience": "",
+                },
+            )
+            saved = save_profile(
+                profile_dir,
+                {
+                    "personal": {
+                        "given_name": " Jane ",
+                        "family_name": " Example ",
+                        "email": "jane@example.com",
+                    },
+                    "skills": [],
+                    "experience": "",
+                },
+            )
+
+            self.assertEqual(profile_display_name(saved, "Config Name"), "Jane Example")
+            self.assertEqual(saved["personal"]["custom"], "keep")
+            self.assertEqual(
+                profile_display_name({"personal": {"name": "Legacy Name"}}, "Config Name"),
+                "Legacy Name",
+            )
+            self.assertEqual(profile_display_name({"personal": {}}, "Config Name"), "Config Name")
+
     def test_profile_cv_rejects_unsupported_type(self) -> None:
         with TemporaryDirectory() as temp:
             with self.assertRaisesRegex(ValueError, "PDF or DOCX"):
@@ -52,8 +90,8 @@ class RouteTests(unittest.TestCase):
         response = root()
         self.assertEqual(response.headers["cache-control"], "no-store, max-age=0")
         html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
-        self.assertIn("/static/app.js?v=2", html)
-        self.assertIn("/static/styles.css?v=2", html)
+        self.assertIn("/static/app.js?v=3", html)
+        self.assertIn("/static/styles.css?v=3", html)
 
     def test_cv_pdf_ui_is_generate_only_and_report_download_uses_server_pdf(self) -> None:
         app_js = (STATIC_DIR / "app.js").read_text(encoding="utf-8")

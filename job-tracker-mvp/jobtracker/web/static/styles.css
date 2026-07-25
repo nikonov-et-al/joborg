@@ -103,6 +103,11 @@ summary { cursor: pointer; font-weight: 800; margin-bottom: .65rem; }
 .document { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; color: #344057; }
 .file-links { display: grid; gap: .45rem; padding: 0; list-style: none; }
 .file-links li { display: flex; align-items: center; gap: .55rem; overflow-wrap: anywhere; }
+.workspace-list { display: grid; gap: .6rem; }
+.workspace-row { display: flex; justify-content: space-between; align-items: center; gap: 1rem; padding: .8rem; border: 1px solid var(--line); border-radius: 10px; }
+.workspace-row strong, .workspace-row small, .workspace-path { display: block; }
+.workspace-row small, .workspace-path { color: var(--muted); overflow-wrap: anywhere; }
+.folder-picker { display: flex; gap: .6rem; align-items: center; }
 .attach-row input { flex: 1 1 220px; }
 .attach-row select { width: 190px; }
 .cv-editor { margin-top: .75rem; font-family: Consolas, monospace; }
@@ -142,6 +147,7 @@ th { background: #f3f5f9; }
   .edit-job-grid .span-2 { grid-column: auto; }
   .span-2 { grid-column: auto; }
   .queued-file, .job-row { grid-template-columns: 1fr; }
+  .workspace-row, .folder-picker { align-items: stretch; flex-direction: column; }
   .report-stat { grid-template-columns: 1fr; gap: .3rem; }
 }
 

@@ -10,7 +10,10 @@ const MONTHS = [
   "January", "February", "March", "April", "May", "June",
   "July", "August", "September", "October", "November", "December",
 ];
-const state = { jobs: [], detail: null, newFiles: [], profile: null, report: null, notice: "" };
+const state = {
+  jobs: [], loadErrors: [], detail: null, newFiles: [], profile: null, report: null,
+  workspaces: null, workspaceFolder: "", notice: "",
+};
 const app = document.querySelector("#app");
 const apiStatus = document.querySelector("#apiStatus");
 const today = new Date().toISOString().slice(0, 10);
@@ -91,7 +94,14 @@ function fileRows(files) {
 }
 
 async function loadJobs() {
-  state.jobs = await request("/jobs");
+  const result = await request("/jobs?include_errors=true");
+  state.jobs = result.jobs;
+  state.loadErrors = result.errors;
+}
+
+function loadErrorsHtml() {
+  if (!state.loadErrors.length) return "";
+  return `<section class="card error"><strong>${state.loadErrors.length} job record(s) failed to load.</strong><ul>${state.loadErrors.map(error => `<li><code>${esc(error.path)}</code> [${esc(error.code)}]: ${esc(error.message)}</li>`).join("")}</ul><p>Run <code>job doctor</code> for details.</p></section>`;
 }
 
 function renderDashboard() {
@@ -99,6 +109,7 @@ function renderDashboard() {
   const interviews = state.jobs.filter(job => job.status === "interview_invited");
   app.innerHTML = `
     ${pageHead("Dashboard", "Application status at a glance.", '<a class="button" href="#/new-job">Add job</a>')}
+    ${loadErrorsHtml()}
     <section class="stats-grid">
       ${[
         ["Applications", s.total], ["Rejected", s.rejected], ["Interview invites", s.invited],
@@ -172,6 +183,7 @@ function renderJobsPage() {
   const selected = routeInfo().query.get("job");
   app.innerHTML = `
     ${pageHead("All Jobs", "Search applications and inspect complete records.", '<a class="button" href="#/new-job">Add job</a>')}
+    ${loadErrorsHtml()}
     <div class="jobs-layout">
       <section class="card jobs-column">
         <div class="filters"><input id="jobSearch" type="search" placeholder="Search jobs"><select id="jobStatus">${statusOptions("", true)}</select></div>
@@ -310,11 +322,18 @@ function reportHtml(report) {
 async function renderProfile() {
   if (!state.profile) state.profile = await request("/profile");
   const p = state.profile.personal || {};
+  const legacyName = p.name && !p.given_name && !p.family_name
+    ? `<p class="muted">Previous full name: ${esc(p.name)}. Enter given and family names before saving.</p>`
+    : "";
   app.innerHTML = `
     ${pageHead("User Profile", "Facts used for tailored CV generation.")}
     <form id="profileForm" class="card form">
+      ${legacyName}
       <div class="form-grid">
-        ${["name", "email", "phone", "city", "linkedin", "github", "website"].map(key =>
+        <label>Given name<input name="given_name" value="${esc(p.given_name || "")}" required></label>
+        <label>Family name<input name="family_name" value="${esc(p.family_name || "")}" required></label>
+        <label>Email<input name="email" type="email" value="${esc(p.email || "")}" required></label>
+        ${["phone", "city", "linkedin", "github", "website"].map(key =>
           `<label>${label(key)}<input name="${key}" value="${esc(p[key] || "")}"></label>`).join("")}
       </div>
       <label>Skills<input name="skills" value="${esc(list(state.profile.skills).join(", "))}" placeholder="Python, FastAPI, SQL"></label>
@@ -328,24 +347,95 @@ async function renderProfile() {
     </section>`;
 }
 
+const desktopApi = () => window.pywebview?.api;
+
+async function desktopCall(method, ...args) {
+  const api = desktopApi();
+  if (!api || typeof api[method] !== "function") throw new Error("Workspace management requires desktop app");
+  return api[method](...args);
+}
+
+const workspaceRecord = item => typeof item === "string" ? { path: item } : (item || {});
+
+function workspaceListHtml(data) {
+  const active = String(data?.active || "");
+  const records = list(data?.workspaces).map(workspaceRecord);
+  if (!records.length) return '<p class="empty">No remembered workspaces.</p>';
+  return `<div class="workspace-list">${records.map(record => {
+    const path = String(record.path || "");
+    const isActive = path === active;
+    const available = record.available !== false;
+    return `<article class="workspace-row">
+      <div><strong>${esc(record.applicant_name || record.name || "Unnamed profile")}</strong>
+        <span class="workspace-path">${esc(path)}</span>
+        <small>${isActive ? "Active" : available ? "Available" : "Unavailable"}</small>
+      </div>
+      <div class="actions">
+        <button type="button" class="secondary" data-activate-workspace="${esc(path)}" ${isActive || !available ? "disabled" : ""}>Switch</button>
+        <button type="button" class="text-button" data-forget-workspace="${esc(path)}" ${isActive ? "disabled" : ""}>Forget</button>
+      </div>
+    </article>`;
+  }).join("")}</div>`;
+}
+
+async function renderSettings() {
+  if (!desktopApi()) {
+    app.innerHTML = `${pageHead("Settings", "Workspace and storage location.")}
+      <section class="card"><p>Workspace management requires desktop app</p></section>`;
+    return;
+  }
+  state.workspaces = await desktopCall("get_workspaces");
+  const active = state.workspaces?.active || "";
+  app.innerHTML = `
+    ${pageHead("Settings", "Workspace and storage location.")}
+    <section class="card form">
+      <div class="section-head"><div><h2>Current workspace</h2><p class="workspace-path">${esc(active || "None")}</p></div>
+        <button type="button" class="secondary" data-open-workspace>Open existing workspace</button>
+      </div>
+      ${workspaceListHtml(state.workspaces)}
+    </section>
+    <form id="createWorkspaceForm" class="card form">
+      <div><h2>Create workspace</h2><p class="muted">Choose an empty local folder and create its applicant profile.</p></div>
+      <label>Data folder
+        <span class="folder-picker"><input id="workspaceFolder" value="${esc(state.workspaceFolder)}" readonly required>
+          <button type="button" class="secondary" data-choose-workspace-folder>Choose folder</button></span>
+      </label>
+      <div class="form-grid">
+        <label>Given name<input name="given_name" required></label>
+        <label>Family name<input name="family_name" required></label>
+        <label>Email<input name="email" type="email" required></label>
+        ${["phone", "city", "linkedin", "github", "website"].map(key =>
+          `<label>${label(key)}<input name="${key}"></label>`).join("")}
+      </div>
+      <div class="actions"><button type="submit">Create workspace</button></div>
+    </form>`;
+}
+
 async function navigate() {
   const { route } = routeInfo();
+  const jobRoutes = new Set(["home", "new-job", "jobs", "report"]);
   document.querySelectorAll("[data-route]").forEach(link => link.classList.toggle("active", link.dataset.route === route));
   state.detail = null;
   try {
-    if (!state.jobs.length) await loadJobs();
+    if (jobRoutes.has(route) && !state.jobs.length) await loadJobs();
     if (route === "home") renderDashboard();
     else if (route === "new-job") renderNewJob();
     else if (route === "jobs") renderJobsPage();
     else if (route === "report") renderReport();
     else if (route === "profile") await renderProfile();
+    else if (route === "settings") await renderSettings();
     else location.hash = "#/home";
     app.focus();
     if (state.notice) {
       setStatus(state.notice, "bad");
       state.notice = "";
+    } else if (jobRoutes.has(route)) {
+      setStatus(
+        state.loadErrors.length ? `${state.jobs.length} jobs; ${state.loadErrors.length} failed to load` : `${state.jobs.length} jobs`,
+        state.loadErrors.length ? "bad" : "ok",
+      );
     } else {
-      setStatus(`${state.jobs.length} jobs`, "ok");
+      setStatus("Ready", "ok");
     }
   } catch (error) {
     app.innerHTML = `<div class="card error">${esc(error.message)}</div>`;
@@ -366,6 +456,39 @@ app.addEventListener("change", event => {
 });
 
 app.addEventListener("click", async event => {
+  if (event.target.closest("[data-choose-workspace-folder]")) {
+    try {
+      const path = await desktopCall("choose_workspace_folder");
+      if (path) {
+        state.workspaceFolder = String(path);
+        document.querySelector("#workspaceFolder").value = state.workspaceFolder;
+      }
+    } catch (error) { setStatus(error.message, "bad"); }
+    return;
+  }
+  if (event.target.closest("[data-open-workspace]")) {
+    try {
+      const path = await desktopCall("choose_workspace_folder");
+      if (path) await desktopCall("open_workspace", String(path));
+    } catch (error) { setStatus(error.message, "bad"); }
+    return;
+  }
+  const activateWorkspace = event.target.closest("[data-activate-workspace]");
+  if (activateWorkspace) {
+    try {
+      await desktopCall("activate_workspace", activateWorkspace.dataset.activateWorkspace);
+    } catch (error) { setStatus(error.message, "bad"); }
+    return;
+  }
+  const forgetWorkspace = event.target.closest("[data-forget-workspace]");
+  if (forgetWorkspace) {
+    try {
+      await desktopCall("forget_workspace", forgetWorkspace.dataset.forgetWorkspace);
+      await renderSettings();
+      setStatus("Workspace forgotten; data was not deleted", "ok");
+    } catch (error) { setStatus(error.message, "bad"); }
+    return;
+  }
   const jobRow = event.target.closest("[data-job]");
   if (jobRow) {
     history.replaceState(null, "", `#/jobs?job=${encodeURIComponent(jobRow.dataset.job)}`);
@@ -480,9 +603,11 @@ app.addEventListener("submit", async event => {
     const raw = new FormData(event.target);
     const payload = Object.fromEntries(raw.entries());
     payload.relevant_for_arbeitsagentur = raw.get("relevant_for_arbeitsagentur") === "on";
+    const jobDescription = payload.job_description || "";
+    delete payload.job_description;
     const data = new FormData();
     data.append("payload", JSON.stringify(payload));
-    data.append("job_description", payload.job_description || "");
+    data.append("job_description", jobDescription);
     state.newFiles.forEach(item => data.append("files", item.file, item.file.name));
     data.append("file_categories", JSON.stringify(state.newFiles.map(item => ({ name: item.file.name, category: item.category }))));
     setStatus("Creating job...", "busy");
@@ -502,10 +627,17 @@ app.addEventListener("submit", async event => {
   }
   if (event.target.id === "profileForm") {
     const raw = new FormData(event.target);
-    const personal = Object.fromEntries(["name", "email", "phone", "city", "linkedin", "github", "website"].map(key => [key, raw.get(key) || ""]));
+    const personal = Object.fromEntries(["given_name", "family_name", "email", "phone", "city", "linkedin", "github", "website"].map(key => [key, raw.get(key) || ""]));
     const payload = { personal, skills: String(raw.get("skills") || "").split(",").map(x => x.trim()).filter(Boolean), experience: raw.get("experience") || "" };
     state.profile = await request("/profile", { method: "PUT", body: JSON.stringify(payload) });
     setStatus("Profile saved", "ok");
+  }
+  if (event.target.id === "createWorkspaceForm") {
+    const raw = new FormData(event.target);
+    const profile = Object.fromEntries(["given_name", "family_name", "email", "phone", "city", "linkedin", "github", "website"].map(key => [key, raw.get(key) || ""]));
+    try {
+      await desktopCall("create_workspace", state.workspaceFolder, profile);
+    } catch (error) { setStatus(error.message, "bad"); }
   }
   if (event.target.id === "profileCvForm") {
     const data = new FormData(event.target);
