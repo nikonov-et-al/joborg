@@ -1,47 +1,59 @@
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Body, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.status import HTTP_201_CREATED
 
-from .markdown import read_markdown_with_frontmatter
-from .models import JobApplication
+from .application import JobTrackerService, RecordNotFoundError
 from .llm import generate_cv_draft_with_llm
 from .pdf import render_cv_pdf
 from .reports import build_report_data, report_data_to_dict, render_report_pdf, write_report_data
-from .services import (
-    EDITABLE_JOB_FIELDS,
-    UploadedAsset,
-    apply_job_update,
-    create_job_record,
-    job_record_to_dict,
-    list_job_records,
-    load_profile,
-    load_project_context,
-    save_profile,
-    store_profile_cv,
-    write_project_report,
+from .repositories import (
+    LegacyDocumentGateway,
+    LegacyMarkdownRepository,
+    LegacyReportGateway,
+    build_application_service,
 )
+from .schemas import CvDraftSchema, JobCreateSchema, JobUpdateSchema, ProfileUpdateSchema
+from .services import UploadedAsset, job_record_to_dict, load_project_context, write_project_report
 
 
 STATIC_DIR = Path(__file__).resolve().parent / "web" / "static"
-
-app = FastAPI(title="jobtracker web backend")
-app.mount("/static", StaticFiles(directory=str(STATIC_DIR), check_dir=False), name="static")
+router = APIRouter()
 
 
-@app.middleware("http")
-async def disable_ui_cache(request, call_next) -> Response:
-    response = await call_next(request)
-    if request.url.path == "/" or request.url.path.startswith("/static/"):
-        response.headers["Cache-Control"] = "no-store, max-age=0"
-        response.headers["Pragma"] = "no-cache"
-    return response
+def _build_application_service() -> JobTrackerService:
+    context = load_project_context()
+    if context.database is not None and context.files_dir is not None:
+        return build_application_service(context)
+    repository = LegacyMarkdownRepository(context)
+    return JobTrackerService(
+        context,
+        repository,
+        repository,
+        LegacyReportGateway(
+            context,
+            write_default_fn=write_project_report,
+            build_fn=build_report_data,
+            write_data_fn=write_report_data,
+            render_pdf_fn=render_report_pdf,
+        ),
+        LegacyDocumentGateway(
+            context,
+            generate_fn=generate_cv_draft_with_llm,
+            render_fn=render_cv_pdf,
+        ),
+    )
+
+
+def get_application_service(request: Request) -> JobTrackerService:
+    return request.app.state.jobtracker_service or _build_application_service()
 
 
 def _split_csv(value: str) -> list[str]:
@@ -127,56 +139,63 @@ def _build_job_payload(flat_data: dict[str, Any], payload: dict[str, Any]) -> di
     return merged
 
 
-@app.get("/", include_in_schema=False)
+@router.get("/", include_in_schema=False)
 def root() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html", headers={"Cache-Control": "no-store, max-age=0"})
 
 
-@app.get("/api/config")
-def api_config() -> dict[str, Any]:
-    context = load_project_context()
+@router.get("/api/config")
+def api_config(
+    service: JobTrackerService = Depends(get_application_service),
+) -> dict[str, Any]:
+    context = service.context
+    applicant = dict(context.config.get("applicant", {}))
+    applicant["name"] = context.applicant_name
     return {
-        "applicant": context.config.get("applicant", {}),
+        "applicant": applicant,
         "paths": dict(context.config.get("paths", {})),
         "llm": dict(context.config.get("llm", {})),
         "export": dict(context.config.get("export", {})),
     }
 
 
-@app.get("/api/jobs")
+@router.get("/api/jobs")
 def api_list_jobs(
+    response: Response,
     status: str | None = None,
     month: str | None = None,
-) -> list[dict[str, Any]]:
-    context = load_project_context()
-    jobs = list_job_records(context.jobs_dir)
+    include_errors: bool = False,
+    service: JobTrackerService = Depends(get_application_service),
+) -> list[dict[str, Any]] | dict[str, Any]:
+    loaded = service.list_jobs(status=status, month=month)
+    serialized_jobs = [job_record_to_dict(folder, job) for folder, job in loaded.jobs]
+    response.headers["X-Jobtracker-Loaded-Count"] = str(len(serialized_jobs))
+    response.headers["X-Jobtracker-Failed-Count"] = str(loaded.failed_count)
+    if loaded.errors:
+        response.headers["Warning"] = '199 jobtracker "Some job records failed to load; run job doctor"'
+    if not include_errors:
+        return serialized_jobs
+    return {
+        "jobs": serialized_jobs,
+        "loaded_count": len(serialized_jobs),
+        "failed_count": loaded.failed_count,
+        "errors": [asdict(error) for error in loaded.errors],
+    }
 
-    if status:
-        jobs = [(folder, job) for folder, job in jobs if job.status == status]
 
-    if month:
-        jobs = [(folder, job) for folder, job in jobs if job.date_applied.startswith(month)]
-
-    return [job_record_to_dict(folder, job) for folder, job in jobs]
-
-
-@app.get("/api/jobs/{job_id}")
-def api_get_job(job_id: str) -> dict[str, Any]:
-    context = load_project_context()
-    job_dir = context.jobs_dir / job_id
-    job_md = job_dir / "job.md"
-
-    if not job_md.exists():
-        raise HTTPException(status_code=404, detail="Job not found")
-
-    metadata, body = read_markdown_with_frontmatter(job_md)
-    job = JobApplication.from_metadata(metadata)
-    result = job_record_to_dict(job_dir, job)
-    result["body"] = body
-    description_path = job_dir / "job_description.md"
-    result["job_description"] = (
-        description_path.read_text(encoding="utf-8") if description_path.exists() else ""
-    )
+@router.get("/api/jobs/{job_id}")
+def api_get_job(
+    job_id: str,
+    service: JobTrackerService = Depends(get_application_service),
+) -> dict[str, Any]:
+    try:
+        details = service.get_job(job_id)
+    except RecordNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Job not found") from exc
+    job = details.job
+    result = job_record_to_dict(details.folder, job)
+    result["body"] = details.body
+    result["job_description"] = details.job_description
     result["files"] = {
         "cv": [job.cv_file] if job.cv_file else [],
         "motivation_letter": [job.motivation_letter_file] if job.motivation_letter_file else [],
@@ -184,47 +203,34 @@ def api_get_job(job_id: str) -> dict[str, Any]:
         "evidence": job.evidence,
         "screenshots": job.screenshots,
     }
-    draft_path = job_dir / "cv" / "generated_cv.md"
-    result["cv_draft"] = draft_path.read_text(encoding="utf-8") if draft_path.exists() else ""
+    result["cv_draft"] = details.cv_draft
     return result
 
 
-@app.patch("/api/jobs/{job_id}")
-def api_update_job(job_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-    context = load_project_context()
-    job_dir = context.jobs_dir / job_id
-    job_md = job_dir / "job.md"
-
-    if not job_md.exists():
-        raise HTTPException(status_code=404, detail="Job not found")
-
-    metadata, _body = read_markdown_with_frontmatter(job_md)
-    job = JobApplication.from_metadata(metadata)
-
-    allowed = EDITABLE_JOB_FIELDS | {"job_description", "note"}
-    unknown = set(payload) - allowed
-    if unknown:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Fields cannot be edited: {', '.join(sorted(unknown))}",
-        )
-
+@router.patch("/api/jobs/{job_id}")
+def api_update_job(
+    job_id: str,
+    payload: JobUpdateSchema,
+    service: JobTrackerService = Depends(get_application_service),
+) -> dict[str, Any]:
+    changes = payload.changes()
+    note = changes.pop("note", "")
+    job_description = changes.pop("job_description", None)
     try:
-        job, _stored = apply_job_update(
-            job_dir,
-            job,
-            updates={key: payload[key] for key in EDITABLE_JOB_FIELDS if key in payload},
-            note=payload.get("note", ""),
-            job_description=payload.get("job_description") if "job_description" in payload else None,
+        result = service.update_job(
+            job_id,
+            updates=changes,
+            note=note,
+            job_description=job_description,
         )
+    except RecordNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Job not found") from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-    write_project_report(context)
-    return job_record_to_dict(job_dir, job)
+    return job_record_to_dict(result.folder, result.job)
 
 
-@app.post("/api/jobs", status_code=HTTP_201_CREATED)
+@router.post("/api/jobs", status_code=HTTP_201_CREATED)
 async def api_create_job(
     payload: str = Form(""),
     company: str = Form(""),
@@ -248,8 +254,8 @@ async def api_create_job(
     job_description: str = Form(""),
     files: list[UploadFile] | None = File(None),
     file_categories: str = Form(""),
+    service: JobTrackerService = Depends(get_application_service),
 ) -> dict[str, Any]:
-    context = load_project_context()
     parsed_payload = _parse_json(payload, default={})
     if not isinstance(parsed_payload, dict):
         raise HTTPException(status_code=422, detail="Invalid job payload")
@@ -274,24 +280,25 @@ async def api_create_job(
         "next_action_date": next_action_date,
         "relevant_for_arbeitsagentur": relevant_for_arbeitsagentur,
     }
-    job = JobApplication.from_metadata(_build_job_payload(flat_payload, parsed_payload))
+    try:
+        job = JobCreateSchema.model_validate(
+            _build_job_payload(flat_payload, parsed_payload)
+        ).to_job()
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     categories = _normalize_upload_categories(files, file_categories)
     assets = await _collect_assets(files, categories)
-    job_dir = context.jobs_dir / job.folder_name()
-
     try:
-        job, stored_paths = create_job_record(job_dir, job, job_description, assets)
+        result = service.create_job(job, job_description, assets)
     except FileExistsError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-    report_path = write_project_report(context)
-    result = job_record_to_dict(job_dir, job)
-    result["stored_files"] = stored_paths
-    result["report_path"] = report_path.as_posix()
-    return result
+    response = job_record_to_dict(result.folder, result.job)
+    response["stored_files"] = list(result.stored_paths)
+    response["report_path"] = result.report_path.as_posix()
+    return response
 
 
 async def _attach_impl(
@@ -302,16 +309,8 @@ async def _attach_impl(
     note: str,
     files: list[UploadFile] | None,
     file_categories: str,
+    service: JobTrackerService,
 ) -> dict[str, Any]:
-    context = load_project_context()
-    job_dir = context.jobs_dir / job_id
-    job_md = job_dir / "job.md"
-
-    if not job_md.exists():
-        raise HTTPException(status_code=404, detail="Job not found")
-
-    metadata, _body = read_markdown_with_frontmatter(job_md)
-    job = JobApplication.from_metadata(metadata)
     parsed_payload = _parse_json(payload, default=[])
 
     if isinstance(parsed_payload, dict):
@@ -323,25 +322,24 @@ async def _attach_impl(
     assets = await _collect_assets(files, categories)
 
     try:
-        job, stored_paths = apply_job_update(
-            job_dir,
-            job,
+        result = service.attach_files(
+            job_id,
             assets,
             status=status,
             status_date=status_date or None,
             note=note,
         )
+    except RecordNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Job not found") from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-    report_path = write_project_report(context)
-    result = job_record_to_dict(job_dir, job)
-    result["stored_files"] = stored_paths
-    result["report_path"] = report_path.as_posix()
-    return result
+    response = job_record_to_dict(result.folder, result.job)
+    response["stored_files"] = list(result.stored_paths)
+    response["report_path"] = result.report_path.as_posix()
+    return response
 
 
-@app.post("/api/jobs/{job_id}/files")
+@router.post("/api/jobs/{job_id}/files")
 async def api_attach_job(
     job_id: str,
     payload: str = Form(""),
@@ -350,11 +348,14 @@ async def api_attach_job(
     note: str = Form(""),
     files: list[UploadFile] | None = File(None),
     file_categories: str = Form(""),
+    service: JobTrackerService = Depends(get_application_service),
 ) -> dict[str, Any]:
-    return await _attach_impl(job_id, payload, status, status_date, note, files, file_categories)
+    return await _attach_impl(
+        job_id, payload, status, status_date, note, files, file_categories, service
+    )
 
 
-@app.post("/api/jobs/{job_id}/attachments")
+@router.post("/api/jobs/{job_id}/attachments")
 async def api_attach_job_compat(
     job_id: str,
     payload: str = Form(""),
@@ -363,168 +364,117 @@ async def api_attach_job_compat(
     note: str = Form(""),
     files: list[UploadFile] | None = File(None),
     file_categories: str = Form(""),
+    service: JobTrackerService = Depends(get_application_service),
 ) -> dict[str, Any]:
-    return await _attach_impl(job_id, payload, status, status_date, note, files, file_categories)
+    return await _attach_impl(
+        job_id, payload, status, status_date, note, files, file_categories, service
+    )
 
 
-def _report_period_key(year: str, month_number: str) -> str:
-    if year and month_number:
-        return f"{year}-{month_number}"
-    if year:
-        return year
-    if month_number:
-        return f"all-years-{month_number}"
-    return ""
-
-
-@app.post("/api/report")
+@router.post("/api/report")
 def api_report(
     month: str | None = None,
     year: str | None = None,
     month_number: str | None = None,
+    service: JobTrackerService = Depends(get_application_service),
 ) -> dict[str, Any]:
-    context = load_project_context()
     try:
-        data = build_report_data(
-            context.jobs_dir,
-            applicant_name=str(context.config.get("applicant", {}).get("name", "")),
+        artifact = service.create_report(
             month=month,
             year=year,
             month_number=month_number,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-    period_key = _report_period_key(data.year, data.month_number)
-    report_path = (
-        context.reports_dir / period_key / "report.md"
-        if period_key
-        else context.reports_dir / "report.md"
-    )
-    write_report_data(data, report_path)
     return {
-        "report_path": report_path.as_posix(),
-        "content": report_path.read_text(encoding="utf-8"),
-        "data": report_data_to_dict(data),
+        "report_path": artifact.path.as_posix(),
+        "content": artifact.content,
+        "data": report_data_to_dict(artifact.data),
     }
 
 
-@app.get("/api/report/pdf")
+@router.get("/api/report/pdf")
 def api_report_pdf(
     month: str | None = None,
     year: str | None = None,
     month_number: str | None = None,
+    service: JobTrackerService = Depends(get_application_service),
 ) -> Response:
-    context = load_project_context()
     try:
-        data = build_report_data(
-            context.jobs_dir,
-            applicant_name=str(context.config.get("applicant", {}).get("name", "")),
+        pdf, filename = service.render_report_pdf(
             month=month,
             year=year,
             month_number=month_number,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-    pdf = render_report_pdf(data)
-    period_key = _report_period_key(data.year, data.month_number)
-    suffix = f"-{period_key}" if period_key else ""
     return Response(
         content=pdf,
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="report{suffix}.pdf"'},
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 
-@app.get("/api/profile")
-def api_get_profile() -> dict[str, Any]:
-    context = load_project_context()
-    return load_profile(context.profile_dir)
+@router.get("/api/profile")
+def api_get_profile(
+    service: JobTrackerService = Depends(get_application_service),
+) -> dict[str, Any]:
+    return service.get_profile()
 
 
-@app.put("/api/profile")
-def api_put_profile(payload: dict[str, Any]) -> dict[str, Any]:
-    context = load_project_context()
+@router.put("/api/profile")
+def api_put_profile(
+    payload: ProfileUpdateSchema,
+    service: JobTrackerService = Depends(get_application_service),
+) -> dict[str, Any]:
     try:
-        return save_profile(context.profile_dir, payload)
+        return service.save_profile(payload.model_dump())
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
-@app.post("/api/profile/cvs", status_code=HTTP_201_CREATED)
-async def api_upload_profile_cvs(files: list[UploadFile] | None = File(None)) -> dict[str, Any]:
-    context = load_project_context()
-    uploaded: list[str] = []
+@router.post("/api/profile/cvs", status_code=HTTP_201_CREATED)
+async def api_upload_profile_cvs(
+    files: list[UploadFile] | None = File(None),
+    service: JobTrackerService = Depends(get_application_service),
+) -> dict[str, Any]:
+    assets: list[UploadedAsset] = []
     for upload in files or []:
         if not upload.filename:
             continue
-        asset = UploadedAsset(filename=Path(upload.filename).name, content=await upload.read())
+        assets.append(UploadedAsset(filename=Path(upload.filename).name, content=await upload.read()))
         await upload.close()
-        try:
-            uploaded.append(store_profile_cv(context.profile_dir, asset))
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return {"uploaded": uploaded, "profile": load_profile(context.profile_dir)}
-
-
-@app.post("/api/jobs/{job_id}/cv-draft")
-def api_generate_cv_draft(job_id: str) -> dict[str, Any]:
-    context = load_project_context()
-    job_dir = context.jobs_dir / job_id
-    job_md = job_dir / "job.md"
-    description_path = job_dir / "job_description.md"
-    if not job_md.exists():
-        raise HTTPException(status_code=404, detail="Job not found")
-
-    metadata, _body = read_markdown_with_frontmatter(job_md)
-    profile = load_profile(context.profile_dir)
     try:
-        content = generate_cv_draft_with_llm(
-            profile=profile,
-            job_description=description_path.read_text(encoding="utf-8") if description_path.exists() else "",
-            job=metadata,
-            config=context.config,
-        )
+        uploaded, profile = service.upload_profile_cvs(assets)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"uploaded": uploaded, "profile": profile}
+
+
+@router.post("/api/jobs/{job_id}/cv-draft")
+def api_generate_cv_draft(
+    job_id: str,
+    service: JobTrackerService = Depends(get_application_service),
+) -> dict[str, Any]:
+    try:
+        content = service.generate_cv_draft(job_id)
+    except RecordNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Job not found") from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"CV generation failed: {exc}") from exc
-
-    draft_path = job_dir / "cv" / "generated_cv.md"
-    draft_path.parent.mkdir(parents=True, exist_ok=True)
-    draft_path.write_text(content, encoding="utf-8")
-    return {"job_id": job_id, "content": content, "path": draft_path.relative_to(job_dir).as_posix()}
+    return {"job_id": job_id, "content": content, "path": "cv/generated_cv.md"}
 
 
-@app.post("/api/jobs/{job_id}/cv-pdf")
-def api_generate_cv_pdf(job_id: str, payload: dict[str, Any] | None = Body(default=None)) -> Response:
-    context = load_project_context()
-    job_dir = context.jobs_dir / job_id
-    job_md = job_dir / "job.md"
-    if not job_md.exists():
-        raise HTTPException(status_code=404, detail="Job not found")
-
-    metadata, _body = read_markdown_with_frontmatter(job_md)
-    draft_path = job_dir / "cv" / "generated_cv.md"
-
-    content = None
-    if isinstance(payload, dict):
-        content = payload.get("content")
-
-    if content is None:
-        content = draft_path.read_text(encoding="utf-8") if draft_path.exists() else ""
-    elif not isinstance(content, str):
-        raise HTTPException(status_code=422, detail="content must be text")
-
-    content = content.strip()
-    if not content:
-        raise HTTPException(status_code=422, detail="CV content is empty")
-
+@router.post("/api/jobs/{job_id}/cv-pdf")
+def api_generate_cv_pdf(
+    job_id: str,
+    payload: CvDraftSchema | None = Body(default=None),
+    service: JobTrackerService = Depends(get_application_service),
+) -> Response:
     try:
-        pdf = render_cv_pdf(
-            content,
-            applicant_name=str(context.config.get("applicant", {}).get("name", "")),
-            job_title=str(metadata.get("role", "")),
-        )
+        pdf = service.render_cv_pdf(job_id, payload.content if payload else None)
+    except RecordNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Job not found") from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -535,17 +485,34 @@ def api_generate_cv_pdf(job_id: str, payload: dict[str, Any] | None = Body(defau
     )
 
 
-@app.put("/api/jobs/{job_id}/cv-draft")
-def api_save_cv_draft(job_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-    context = load_project_context()
-    job_dir = context.jobs_dir / job_id
-    if not (job_dir / "job.md").exists():
-        raise HTTPException(status_code=404, detail="Job not found")
-    content = payload.get("content")
-    if not isinstance(content, str):
-        raise HTTPException(status_code=422, detail="content must be text")
+@router.put("/api/jobs/{job_id}/cv-draft")
+def api_save_cv_draft(
+    job_id: str,
+    payload: CvDraftSchema,
+    service: JobTrackerService = Depends(get_application_service),
+) -> dict[str, Any]:
+    try:
+        path = service.save_cv_draft(job_id, payload.content)
+    except RecordNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Job not found") from exc
+    return {"job_id": job_id, "content": payload.content, "path": path}
 
-    draft_path = job_dir / "cv" / "generated_cv.md"
-    draft_path.parent.mkdir(parents=True, exist_ok=True)
-    draft_path.write_text(content.rstrip() + "\n", encoding="utf-8")
-    return {"job_id": job_id, "content": content, "path": draft_path.relative_to(job_dir).as_posix()}
+
+def create_app(service: JobTrackerService | None = None) -> FastAPI:
+    api = FastAPI(title="jobtracker web backend")
+    api.state.jobtracker_service = service
+    api.mount("/static", StaticFiles(directory=str(STATIC_DIR), check_dir=False), name="static")
+    api.router.routes.extend(router.routes)
+
+    @api.middleware("http")
+    async def disable_ui_cache(request: Request, call_next) -> Response:
+        response = await call_next(request)
+        if request.url.path == "/" or request.url.path.startswith("/static/"):
+            response.headers["Cache-Control"] = "no-store, max-age=0"
+            response.headers["Pragma"] = "no-cache"
+        return response
+
+    return api
+
+
+app = create_app()

@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.pyc
+*.log
+*.egg-info/
+dist/
+build/
+data/
+backups/
+reports/
+profile/
+report.md
+jobs/**/cv/*.pdf
+jobs/**/cv/generated_cv.*

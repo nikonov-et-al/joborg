@@ -1,18 +1,24 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Optional
 
 import typer
+import yaml
 from rich.console import Console
 from rich.table import Table
 
+from .application import JobTrackerService
 from .config import ensure_project_dirs, load_config
-from .files import copy_or_move_file, ensure_dir
+from .doctor import SCHEMA_VERSION, DoctorFatalError, inspect_jobs
 from .llm import default_extraction, extract_job_data_with_llm, test_llm
-from .markdown import append_to_markdown_body, read_markdown_with_frontmatter, update_markdown_frontmatter, write_markdown_with_frontmatter
+from .loading import LoadJobError
+from .migration import execute_migration, preview_migration, verify_migration
 from .models import JobApplication, format_date_display, today_iso
-from .reports import export_report, load_jobs, write_report
+from .repositories import build_application_service
+from .paths import AppPaths
+from .services import AttachmentCopyError, ProjectContext, UploadedAsset
 from .wizard import (
     ask_bool,
     ask_choice,
@@ -26,7 +32,57 @@ from .wizard import (
 )
 
 app = typer.Typer(help="Local job application tracker.")
+migrate_app = typer.Typer(help="Import read-only legacy Markdown data into SQLite.")
+app.add_typer(migrate_app, name="migrate")
 console = Console()
+
+
+def _application_service(config: dict) -> JobTrackerService:
+    paths = config["paths"]
+    app_paths = AppPaths.resolve()
+    uses_runtime_store = Path(paths["jobs"]).resolve() == app_paths.jobs_dir
+    context = ProjectContext(
+        config=config,
+        input_dir=Path(paths.get("input", "input")),
+        jobs_dir=Path(paths["jobs"]),
+        reports_dir=Path(paths.get("reports", "reports")),
+        profile_dir=Path(paths.get("profile", "profile")),
+        database=app_paths.database if uses_runtime_store else None,
+        files_dir=app_paths.files_dir if uses_runtime_store else None,
+        legacy_jobs_dir=app_paths.legacy_jobs_dir,
+    )
+    return build_application_service(context)
+
+
+def _migration_paths(
+    legacy_path: Path | None,
+    data_dir: Path | None,
+) -> tuple[Path, AppPaths]:
+    paths = AppPaths.resolve(data_dir=data_dir, legacy_jobs_dir=legacy_path)
+    legacy = paths.legacy_jobs_dir
+    if legacy is None:
+        raise typer.BadParameter(
+            "Provide --legacy-path or set JOBTRACKER_LEGACY_JOBS_DIR."
+        )
+    return legacy, paths
+
+
+def _print_load_errors(errors: list[LoadJobError] | tuple[LoadJobError, ...]) -> None:
+    console.print(f"[bold red]Failed records: {len(errors)}[/bold red]")
+    for error in errors:
+        console.print(f"[red]{error.path}[/red] [{error.code}]: {error.message}")
+    console.print("Run [bold]job doctor[/bold] for details.")
+
+
+def _print_load_summary(
+    loaded_count: int,
+    errors: list[LoadJobError] | tuple[LoadJobError, ...],
+) -> None:
+    console.print(f"Loaded records: {loaded_count}")
+    if errors:
+        _print_load_errors(errors)
+    else:
+        console.print("Failed records: 0")
 
 
 @app.command()
@@ -35,6 +91,81 @@ def version() -> None:
     from . import __version__
 
     console.print(__version__)
+
+
+@app.command()
+def doctor(
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
+    legacy_path: Path | None = typer.Option(
+        None, "--legacy-path", help="Legacy jobs directory to inspect."
+    ),
+) -> None:
+    """Inspect legacy job records without changing them."""
+    try:
+        config = load_config()
+        configured_jobs = legacy_path or AppPaths.resolve().legacy_jobs_dir or config["paths"]["jobs"]
+        if not isinstance(configured_jobs, (str, Path)) or not str(configured_jobs).strip():
+            raise TypeError("paths.jobs must be a non-empty filesystem path")
+        report = inspect_jobs(Path(configured_jobs))
+    except DoctorFatalError as exc:
+        fatal = exc.to_dict()
+    except (OSError, UnicodeError, yaml.YAMLError, KeyError, TypeError, AttributeError) as exc:
+        fatal = {
+            "code": "configuration_error",
+            "path": "config.yml",
+            "message": f"{type(exc).__name__}: {exc}",
+        }
+    else:
+        fatal = None
+
+    if fatal is not None:
+        if json_output:
+            typer.echo(
+                json.dumps(
+                    {
+                        "schema_version": SCHEMA_VERSION,
+                        "summary": None,
+                        "records": [],
+                        "attachments": [],
+                        "issues": [],
+                        "fatal": fatal,
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        else:
+            console.print(f"[bold red]Doctor failed:[/bold red] {fatal['message']}")
+        raise typer.Exit(code=2)
+
+    if json_output:
+        typer.echo(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+    else:
+        console.print(
+            f"Job directories: {report.job_directory_count}; "
+            f"records parsed: {report.parsed_count}; "
+            f"records failed: {report.failed_count}; "
+            f"physical attachments: {len(report.attachments)}; "
+            f"referenced attachments: {report.referenced_attachment_count}"
+        )
+        if report.issues:
+            table = Table(title="Job Doctor Findings")
+            table.add_column("Severity")
+            table.add_column("Code")
+            table.add_column("Record")
+            table.add_column("Field")
+            table.add_column("Message")
+            for issue in report.issues:
+                table.add_row(
+                    issue.severity,
+                    issue.code,
+                    issue.record_path or "",
+                    issue.field or "",
+                    issue.message,
+                )
+            console.print(table)
+        else:
+            console.print("[green]No issues found.[/green]")
 
 
 @app.command()
@@ -54,6 +185,62 @@ def init() -> None:
     console.print("[bold green]Project folders are ready.[/bold green]")
 
 
+def _print_migration_report(report: object, json_output: bool) -> None:
+    data = report.to_dict()
+    if json_output:
+        typer.echo(json.dumps(data, indent=2, sort_keys=True))
+        return
+    console.print(
+        f"Mode: {data['mode']}; discovered: {data['records_discovered']}; "
+        f"importable: {data['records_importable']}; attachments: {data['attachments']}; "
+        f"imported: {data['imported']}; skipped: {data['skipped']}; verified: {data['verified']}"
+    )
+    for error in data["blocking_errors"]:
+        console.print(f"[red]{error.get('code', 'error')}[/red]: {error.get('message', '')}")
+
+
+@migrate_app.command("preview")
+def migrate_preview(
+    legacy_path: Path | None = typer.Option(None, "--legacy-path"),
+    data_dir: Path | None = typer.Option(None, "--data-dir"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Inspect legacy data and expected destination changes without writing."""
+    legacy, paths = _migration_paths(legacy_path, data_dir)
+    report = preview_migration(legacy, paths.database)
+    _print_migration_report(report, json_output)
+    if not report.ok:
+        raise typer.Exit(code=1)
+
+
+@migrate_app.command("execute")
+def migrate_execute(
+    legacy_path: Path | None = typer.Option(None, "--legacy-path"),
+    data_dir: Path | None = typer.Option(None, "--data-dir"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Copy verified legacy data into the SQLite store without changing sources."""
+    legacy, paths = _migration_paths(legacy_path, data_dir)
+    report = execute_migration(legacy, paths.database, paths.files_dir)
+    _print_migration_report(report, json_output)
+    if not report.ok:
+        raise typer.Exit(code=1)
+
+
+@migrate_app.command("verify")
+def migrate_verify(
+    legacy_path: Path | None = typer.Option(None, "--legacy-path"),
+    data_dir: Path | None = typer.Option(None, "--data-dir"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Compare imported rows and copied-file hashes with legacy sources."""
+    legacy, paths = _migration_paths(legacy_path, data_dir)
+    report = verify_migration(legacy, paths.database, paths.files_dir)
+    _print_migration_report(report, json_output)
+    if not report.ok:
+        raise typer.Exit(code=1)
+
+
 @app.command("ai-test")
 def ai_test() -> None:
     """Test local LLM connection."""
@@ -67,27 +254,7 @@ def ai_test() -> None:
         raise typer.Exit(code=1)
 
 
-def build_job_body(job_description: str) -> str:
-    return f"""
-# Job description
-
-See `job_description.md`.
-
-# Comments
-
-# Timeline
-
-| Date | Event | Evidence |
-|---|---|---|
-| {format_date_display(today_iso())} | Application record created | |
-
-# Original pasted job description preview
-
-{job_description[:2000]}
-""".strip()
-
-
-def attach_application_documents(job: JobApplication, job_dir: Path, input_dir: Path) -> JobApplication:
+def collect_application_documents(job_dir: Path, input_dir: Path) -> list[UploadedAsset]:
     """
     Attach files that exist at application time.
 
@@ -109,40 +276,37 @@ def attach_application_documents(job: JobApplication, job_dir: Path, input_dir: 
         "Select other application files, e.g. job description PDF or portfolio",
     )
 
-    planned: list[tuple[str, Path]] = []
+    planned: list[tuple[str, Path, str]] = []
 
     if cv:
-        planned.append((cv, job_dir / "cv" / Path(cv).name))
+        planned.append((cv, job_dir / "cv" / Path(cv).name, "cv"))
     if letter:
-        planned.append((letter, job_dir / "motivation_letter" / Path(letter).name))
+        planned.append((letter, job_dir / "motivation_letter" / Path(letter).name, "motivation_letter"))
     for filename in extra_application_files:
-        planned.append((filename, job_dir / "attachments" / filename))
+        planned.append((filename, job_dir / "attachments" / filename, "attachments"))
 
     if not planned:
-        return job
+        return []
 
     console.print()
-    console.print("[bold]Move summary[/bold]")
-    for filename, destination in planned:
+    console.print("[bold]Copy summary[/bold]")
+    for filename, destination, _category in planned:
         console.print(f"{input_dir / filename} -> {destination}")
 
-    if not ask_bool("Move these files?", default=False):
-        console.print("[yellow]No files moved.[/yellow]")
-        return job
+    if not ask_bool("Copy these files?", default=False):
+        console.print("[yellow]No files copied.[/yellow]")
+        return []
 
-    if cv:
-        moved = copy_or_move_file(input_dir, cv, job_dir / "cv" / Path(cv).name, move=True)
-        job.cv_file = moved.relative_to(job_dir).as_posix()
+    assets: list[UploadedAsset] = []
+    for filename, _destination, category in planned:
+        source = input_dir / filename
+        try:
+            content = source.read_bytes()
+        except OSError as exc:
+            raise AttachmentCopyError(filename) from exc
+        assets.append(UploadedAsset(filename=filename, content=content, category=category))
 
-    if letter:
-        moved = copy_or_move_file(input_dir, letter, job_dir / "motivation_letter" / Path(letter).name, move=True)
-        job.motivation_letter_file = moved.relative_to(job_dir).as_posix()
-
-    for filename in extra_application_files:
-        moved = copy_or_move_file(input_dir, filename, job_dir / "attachments" / filename, move=True)
-        job.attachments.append(moved.relative_to(job_dir).as_posix())
-
-    return job
+    return assets
 
 
 @app.command()
@@ -155,6 +319,7 @@ def add(
 
     input_dir = Path(config["paths"]["input"])
     jobs_dir = Path(config["paths"]["jobs"])
+    service = _application_service(config)
 
     job_description = ask_job_description()
 
@@ -188,36 +353,19 @@ def add(
         console.print(f"[red]Job folder already exists:[/red] {job_dir}")
         raise typer.Exit(code=1)
 
-    ensure_dir(job_dir)
-    ensure_dir(job_dir / "evidence")
-    ensure_dir(job_dir / "screenshots")
-    ensure_dir(job_dir / "attachments")
-    ensure_dir(job_dir / "cv")
-    ensure_dir(job_dir / "motivation_letter")
+    try:
+        assets = collect_application_documents(job_dir, input_dir)
+        result = service.create_job(job, job_description, assets)
+    except OSError as exc:
+        console.print(f"[bold red]Job creation failed:[/bold red] {exc}")
+        raise typer.Exit(code=1) from exc
 
-    (job_dir / "job_description.md").write_text(
-        f"# Job description\n\n{job_description.strip()}\n",
-        encoding="utf-8",
-    )
-
-    job = attach_application_documents(job, job_dir, input_dir)
-
-    write_markdown_with_frontmatter(
-        job_dir / "job.md",
-        job.to_metadata(),
-        build_job_body(job_description),
-    )
-
-    report_path = Path("report.md")
-    write_report(
-        jobs_dir=jobs_dir,
-        output_path=report_path,
-        applicant_name=config["applicant"].get("name", ""),
-    )
+    loaded = service.list_jobs()
+    _print_load_summary(loaded.loaded_count, loaded.errors)
 
     console.print()
-    console.print(f"[bold green]Created job folder:[/bold green] {job_dir}")
-    console.print(f"[green]Updated report:[/green] {report_path}")
+    console.print(f"[bold green]Created job folder:[/bold green] {result.folder}")
+    console.print(f"[green]Updated report:[/green] {result.report_path}")
 
 
 @app.command()
@@ -227,22 +375,20 @@ def report(
     """Generate report.md or monthly report."""
     config = load_config()
     ensure_project_dirs(config)
-
-    jobs_dir = Path(config["paths"]["jobs"])
+    service = _application_service(config)
 
     if month:
         output_path = Path(config["paths"]["reports"]) / month / "report.md"
     else:
-        output_path = Path("report.md")
+        output_path = Path(config["paths"]["reports"]) / "report.md"
 
-    write_report(
-        jobs_dir=jobs_dir,
-        output_path=output_path,
-        applicant_name=config["applicant"].get("name", ""),
-        month=month,
-    )
+    service.write_report(month, output_path)
+    loaded = service.list_jobs(month=month)
+    _print_load_summary(loaded.loaded_count, loaded.errors)
 
     console.print(f"[bold green]Report written:[/bold green] {output_path}")
+    if loaded.errors:
+        raise typer.Exit(code=1)
 
 
 @app.command()
@@ -251,34 +397,10 @@ def export(
 ) -> None:
     """Export report.md to DOCX/PDF using Pandoc."""
     config = load_config()
-
-    if month:
-        report_path = Path(config["paths"]["reports"]) / month / "report.md"
-        if not report_path.exists():
-            write_report(
-                jobs_dir=Path(config["paths"]["jobs"]),
-                output_path=report_path,
-                applicant_name=config["applicant"].get("name", ""),
-                month=month,
-            )
-    else:
-        report_path = Path("report.md")
-        if not report_path.exists():
-            write_report(
-                jobs_dir=Path(config["paths"]["jobs"]),
-                output_path=report_path,
-                applicant_name=config["applicant"].get("name", ""),
-            )
+    service = _application_service(config)
 
     try:
-        created = export_report(
-            jobs_dir=Path(config["paths"]["jobs"]),
-            report_md=report_path,
-            applicant_name=config["applicant"].get("name", ""),
-            month=month,
-            create_docx=bool(config["export"].get("create_docx", True)),
-            create_pdf=bool(config["export"].get("create_pdf", True)),
-        )
+        created, loaded = service.export_report(month)
     except RuntimeError as exc:
         console.print(f"[bold yellow]{exc}[/bold yellow]")
         console.print("Install Pandoc first, then run this command again.")
@@ -288,6 +410,9 @@ def export(
 
     for path in created:
         console.print(f"[bold green]Created:[/bold green] {path}")
+    _print_load_summary(loaded.loaded_count, loaded.errors)
+    if loaded.errors:
+        raise typer.Exit(code=1)
 
 
 @app.command()
@@ -297,8 +422,12 @@ def attach() -> None:
     ensure_project_dirs(config)
 
     input_dir = Path(config["paths"]["input"])
-    jobs_dir = Path(config["paths"]["jobs"])
-    jobs = load_jobs(jobs_dir)
+    service = _application_service(config)
+    loaded = service.list_jobs()
+    _print_load_summary(loaded.loaded_count, loaded.errors)
+    if loaded.errors:
+        raise typer.Exit(code=1)
+    jobs = loaded.jobs
 
     if not jobs:
         console.print("[yellow]No jobs found. Create one first with: job add[/yellow]")
@@ -310,9 +439,7 @@ def attach() -> None:
         console.print(f"[yellow]{exc}[/yellow]")
         raise typer.Exit(code=1)
 
-    job_md = job_dir / "job.md"
-    metadata, body = read_markdown_with_frontmatter(job_md)
-    job = JobApplication.from_metadata(metadata)
+    job = service.get_job(job_dir.name).job
 
     console.print()
     console.print(f"[bold]Selected:[/bold] {job.company} — {job.role}")
@@ -362,30 +489,13 @@ def attach() -> None:
         console.print("[yellow]No files moved.[/yellow]")
         return
 
-    moved_relative_paths: list[str] = []
-
-    for filename, destination in planned:
-        moved = copy_or_move_file(input_dir, filename, destination, move=True)
-        moved_relative_paths.append(moved.relative_to(job_dir).as_posix())
-
-    if category == "evidence":
-        job.evidence.extend(moved_relative_paths)
-    elif category == "screenshots":
-        job.screenshots.extend(moved_relative_paths)
-    elif category == "attachments" or category == "job_description":
-        job.attachments.extend(moved_relative_paths)
-    elif category == "cv":
-        # Use the last selected CV as the active CV file.
-        job.cv_file = moved_relative_paths[-1]
-    elif category == "motivation_letter":
-        # Use the last selected letter as the active motivation letter.
-        job.motivation_letter_file = moved_relative_paths[-1]
-
     update_status = ask_bool("Update job status now?", default=True)
     status_note = ""
+    new_status: str | None = None
+    new_status_date: str | None = None
 
     if update_status:
-        job.status = ask_choice("New status", [
+        new_status = ask_choice("New status", [
             "draft",
             "applied",
             "confirmation_received",
@@ -398,33 +508,35 @@ def attach() -> None:
             "no_response",
             "closed",
         ], job.status)
-        job.status_date = ask_date("Status date", today_iso())
-        status_note = f"Status changed to {job.status}"
+        new_status_date = ask_date("Status date", today_iso())
+        status_note = f"Status changed to {new_status}"
 
     note = ask_text("Timeline note", status_note or f"Attached {category}")
+    assets: list[UploadedAsset] = []
+    for filename in selected_files:
+        try:
+            content = (input_dir / filename).read_bytes()
+        except OSError as exc:
+            raise AttachmentCopyError(filename) from exc
+        assets.append(UploadedAsset(filename=filename, content=content, category=category))
 
-    update_markdown_frontmatter(job_md, job.to_metadata())
-
-    evidence_text = ", ".join(f"`{path}`" for path in moved_relative_paths)
-    append_to_markdown_body(
-        job_md,
-        f"""
-## Update — {format_date_display(today_iso())}
-
-- Category: {category}
-- Note: {note}
-- Files: {evidence_text}
-""",
-    )
-
-    write_report(
-        jobs_dir=jobs_dir,
-        output_path=Path("report.md"),
-        applicant_name=config["applicant"].get("name", ""),
-    )
+    try:
+        result = service.attach_files(
+            job_dir.name,
+            assets,
+            status=new_status,
+            status_date=new_status_date,
+            note=note,
+            category=category,
+        )
+        for filename in selected_files:
+            (input_dir / filename).unlink()
+    except OSError as exc:
+        console.print(f"[bold red]Attachment failed:[/bold red] {exc}")
+        raise typer.Exit(code=1) from exc
 
     console.print()
-    console.print(f"[bold green]Attached files to:[/bold green] {job_dir}")
+    console.print(f"[bold green]Attached files to:[/bold green] {result.folder}")
     console.print("[green]Updated job.md and report.md[/green]")
 
 
@@ -435,13 +547,8 @@ def list_jobs(
 ) -> None:
     """List job applications."""
     config = load_config()
-    jobs = load_jobs(Path(config["paths"]["jobs"]))
-
-    if status:
-        jobs = [(folder, job) for folder, job in jobs if job.status == status]
-
-    if month:
-        jobs = [(folder, job) for folder, job in jobs if job.date_applied.startswith(month)]
+    loaded = _application_service(config).list_jobs(status=status, month=month)
+    jobs = loaded.jobs
 
     table = Table(title="Job Applications")
     table.add_column("Date")
@@ -454,6 +561,9 @@ def list_jobs(
         table.add_row(format_date_display(job.date_applied), job.company, job.role, job.status, folder.as_posix())
 
     console.print(table)
+    _print_load_summary(loaded.loaded_count, loaded.errors)
+    if loaded.errors:
+        raise typer.Exit(code=1)
 
 
 @app.command()
