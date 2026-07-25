@@ -6,6 +6,7 @@ from datetime import datetime
 from io import BytesIO
 from pathlib import Path
 import calendar
+import logging
 import shutil
 import subprocess
 from typing import Any
@@ -20,13 +21,20 @@ from reportlab.graphics.charts.barcharts import HorizontalBarChart
 from reportlab.graphics.shapes import Drawing
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-from .markdown import read_markdown_with_frontmatter
+from .loading import (
+    LoadJobError,
+    LoadJobsResult,
+    make_job_load_error,
+    validate_job_load_metadata,
+)
+from .markdown import atomic_write_text, read_markdown_with_frontmatter
 from .models import JobApplication, format_date_display
 from .pdf import FONT_BOLD, FONT_REGULAR, register_pdf_fonts
 
 
 REPORT_PAGE_SIZE = landscape(A4)
 REPORT_MARGIN = 10 * mm
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -50,28 +58,48 @@ class ReportData:
     month_number: str
     period_label: str
     generated_at: str
+    loaded_count: int
+    failed_count: int
     total: int
     status_counts: tuple[tuple[str, int], ...]
     rows: tuple[ReportRow, ...]
+    load_errors: tuple[LoadJobError, ...] = ()
 
 
 def find_job_files(jobs_dir: Path) -> list[Path]:
     if not jobs_dir.exists():
         return []
-    return sorted(jobs_dir.glob("*/job.md"))
+    return sorted(
+        directory / "job.md"
+        for directory in jobs_dir.iterdir()
+        if directory.is_dir() and not directory.name.startswith(".")
+    )
 
 
-def load_jobs(jobs_dir: Path) -> list[tuple[Path, JobApplication]]:
+def load_jobs(jobs_dir: Path) -> LoadJobsResult:
     jobs: list[tuple[Path, JobApplication]] = []
+    errors: list[LoadJobError] = []
 
     for path in find_job_files(jobs_dir):
         try:
             metadata, _body = read_markdown_with_frontmatter(path)
+            validate_job_load_metadata(metadata)
             jobs.append((path.parent, JobApplication.from_metadata(metadata)))
-        except Exception:
-            continue
+        except Exception as exc:
+            error = make_job_load_error(path, jobs_dir, exc)
+            errors.append(error)
+            log = logger.warning if error.code == "unexpected_load_error" else logger.info
+            log(
+                "Job record load failed path=%s code=%s exception_type=%s",
+                error.path,
+                error.code,
+                error.exception_type,
+            )
 
-    return sorted(jobs, key=lambda item: item[1].date_applied or "")
+    return LoadJobsResult(
+        jobs=sorted(jobs, key=lambda item: item[1].date_applied or ""),
+        errors=errors,
+    )
 
 
 def yes_no(value: bool) -> str:
@@ -146,7 +174,23 @@ def build_report_data(
     year: str | int | None = None,
     month_number: str | int | None = None,
 ) -> ReportData:
-    jobs = load_jobs(jobs_dir)
+    return build_report_data_from_jobs(
+        load_jobs(jobs_dir),
+        applicant_name=applicant_name,
+        month=month,
+        year=year,
+        month_number=month_number,
+    )
+
+
+def build_report_data_from_jobs(
+    loaded: LoadJobsResult,
+    applicant_name: str = "",
+    month: str | None = None,
+    year: str | int | None = None,
+    month_number: str | int | None = None,
+) -> ReportData:
+    jobs = loaded.jobs
     selected_year, selected_month, period_label = _period_parts(month, year, month_number)
     if selected_year:
         jobs = [(folder, job) for folder, job in jobs if job.date_applied[:4] == selected_year]
@@ -178,9 +222,12 @@ def build_report_data(
         month_number=selected_month,
         period_label=period_label,
         generated_at=generated_at,
+        loaded_count=loaded.loaded_count,
+        failed_count=loaded.failed_count,
         total=len(rows),
         status_counts=tuple(sorted(counts.items())),
         rows=rows,
+        load_errors=tuple(loaded.errors),
     )
 
 
@@ -194,12 +241,20 @@ def _markdown_lines(data: ReportData) -> list[str]:
     lines.append("## Summary")
     lines.append("")
     lines.append(f"- Total applications: **{data.total}**")
+    lines.append(f"- Loaded records: **{data.loaded_count}**")
+    lines.append(f"- Failed records: **{data.failed_count}**")
     for status, count in data.status_counts:
         percentage = count / data.total * 100
         filled = int(percentage / 5 + 0.5)
         bar = "█" * filled + "░" * (20 - filled)
         lines.append(f"- {status}: **{count}** ({percentage:.1f}%) `{bar}`")
     lines.append("")
+    if data.load_errors:
+        lines.append("## Load errors")
+        lines.append("")
+        for error in data.load_errors:
+            lines.append(f"- `{error.path}` (`{error.code}`): {error.message}")
+        lines.append("")
     lines.append("## Applications")
     lines.append("")
     if data.rows:
@@ -245,8 +300,7 @@ def generate_report_md(
 
 
 def write_report_data(data: ReportData, output_path: Path) -> None:
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(report_data_to_markdown(data), encoding="utf-8")
+    atomic_write_text(output_path, report_data_to_markdown(data))
 
 
 def write_report(
@@ -256,18 +310,16 @@ def write_report(
     month: str | None = None,
     year: str | int | None = None,
     month_number: str | int | None = None,
-) -> None:
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(
-        generate_report_md(
-            jobs_dir,
-            applicant_name=applicant_name,
-            month=month,
-            year=year,
-            month_number=month_number,
-        ),
-        encoding="utf-8",
+) -> ReportData:
+    data = build_report_data(
+        jobs_dir,
+        applicant_name=applicant_name,
+        month=month,
+        year=year,
+        month_number=month_number,
     )
+    atomic_write_text(output_path, report_data_to_markdown(data))
+    return data
 
 
 def _report_styles() -> dict[str, ParagraphStyle]:
@@ -362,6 +414,8 @@ def render_report_pdf(data: ReportData) -> bytes:
     story.append(Spacer(1, 2 * mm))
     story.append(Paragraph("Summary", styles["body"]))
     story.append(Paragraph(escape(f"Total applications: {data.total}"), styles["small"]))
+    story.append(Paragraph(escape(f"Loaded records: {data.loaded_count}"), styles["small"]))
+    story.append(Paragraph(escape(f"Failed records: {data.failed_count}"), styles["small"]))
     if data.status_counts:
         story.append(
             Paragraph(
