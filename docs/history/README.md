@@ -29,6 +29,8 @@ designs, or commands that should not be run against current data. Use the root
   data separation, and Git history remediation.
 - [`MILESTONE_7_PLAN.md`](MILESTONE_7_PLAN.md) - ordered database migrations,
   recovery backups, retention, and verified workspace exports.
+- [`MILESTONE_8_PLAN.md`](MILESTONE_8_PLAN.md) - stable application/document
+  contracts, report-failure recovery, and legacy write retirement.
 
 ## History rules
 
