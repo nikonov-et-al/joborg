@@ -30,25 +30,37 @@ class RecordNotFoundError(LookupError):
 
 
 @dataclass(frozen=True)
+class DocumentRef:
+    id: str
+    category: str
+    original_filename: str
+    size: int
+    mime_type: str
+    sha256: str
+    version: int | None = None
+
+
+@dataclass(frozen=True)
 class JobDetails:
-    folder: Path
+    application_id: str
     job: JobApplication
     body: str
     job_description: str
     cv_draft: str
+    documents: tuple[DocumentRef, ...] = ()
 
 
 @dataclass(frozen=True)
 class JobMutationResult:
-    folder: Path
+    application_id: str
     job: JobApplication
-    stored_paths: tuple[str, ...]
-    report_path: Path
+    documents: tuple[DocumentRef, ...]
+    report_warning: str = ""
 
 
 @dataclass(frozen=True)
 class ReportArtifact:
-    path: Path
+    artifact_id: str
     content: str
     data: ReportData
 
@@ -63,7 +75,7 @@ class JobRepository(Protocol):
         job: JobApplication,
         job_description: str,
         assets: Sequence[Asset] = (),
-    ) -> tuple[Path, JobApplication, list[str]]: ...
+    ) -> tuple[str, JobApplication, list[DocumentRef]]: ...
 
     def update(
         self,
@@ -76,7 +88,7 @@ class JobRepository(Protocol):
         category: str = "",
         updates: dict[str, Any] | None = None,
         job_description: str | None = None,
-    ) -> tuple[Path, JobApplication, list[str]]: ...
+    ) -> tuple[str, JobApplication, list[DocumentRef]]: ...
 
     def save_cv_draft(self, job_id: str, content: str) -> str: ...
 
@@ -140,9 +152,9 @@ class JobTrackerService:
         loaded = self.jobs.list()
         jobs = loaded.jobs
         if status:
-            jobs = [(folder, job) for folder, job in jobs if job.status == status]
+            jobs = [(job_id, job) for job_id, job in jobs if job.status == status]
         if month:
-            jobs = [(folder, job) for folder, job in jobs if job.date_applied.startswith(month)]
+            jobs = [(job_id, job) for job_id, job in jobs if job.date_applied.startswith(month)]
         return type(loaded)(jobs=jobs, errors=loaded.errors)
 
     def get_job(self, job_id: str) -> JobDetails:
@@ -154,9 +166,8 @@ class JobTrackerService:
         job_description: str,
         assets: Sequence[Asset] = (),
     ) -> JobMutationResult:
-        folder, created, stored_paths = self.jobs.create(job, job_description, assets)
-        report_path = self.reports.write_default()
-        return JobMutationResult(folder, created, tuple(stored_paths), report_path)
+        application_id, created, documents = self.jobs.create(job, job_description, assets)
+        return JobMutationResult(application_id, created, tuple(documents), self._refresh_report())
 
     def update_job(
         self,
@@ -166,14 +177,13 @@ class JobTrackerService:
         note: str = "",
         job_description: str | None = None,
     ) -> JobMutationResult:
-        folder, updated, stored_paths = self.jobs.update(
+        application_id, updated, documents = self.jobs.update(
             job_id,
             updates=updates,
             note=note,
             job_description=job_description,
         )
-        report_path = self.reports.write_default()
-        return JobMutationResult(folder, updated, tuple(stored_paths), report_path)
+        return JobMutationResult(application_id, updated, tuple(documents), self._refresh_report())
 
     def attach_files(
         self,
@@ -185,7 +195,7 @@ class JobTrackerService:
         note: str = "",
         category: str = "",
     ) -> JobMutationResult:
-        folder, updated, stored_paths = self.jobs.update(
+        application_id, updated, documents = self.jobs.update(
             job_id,
             assets,
             status=status,
@@ -193,8 +203,14 @@ class JobTrackerService:
             note=note,
             category=category,
         )
-        report_path = self.reports.write_default()
-        return JobMutationResult(folder, updated, tuple(stored_paths), report_path)
+        return JobMutationResult(application_id, updated, tuple(documents), self._refresh_report())
+
+    def _refresh_report(self) -> str:
+        try:
+            self.reports.write_default()
+        except OSError as exc:
+            return f"Report refresh failed; regenerate it later: {exc}"
+        return ""
 
     def write_report(self, month: str | None = None, output_path: Path | None = None) -> Path:
         return self.reports.write_default(month, output_path)
@@ -214,7 +230,7 @@ class JobTrackerService:
             else self.context.reports_dir / "report.md"
         )
         self.reports.write_data(data, path)
-        return ReportArtifact(path, path.read_text(encoding="utf-8"), data)
+        return ReportArtifact(period_key or "all", path.read_text(encoding="utf-8"), data)
 
     def render_report_pdf(
         self,

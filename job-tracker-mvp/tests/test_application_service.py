@@ -16,6 +16,7 @@ from jobtracker.repositories import (
     LegacyDocumentGateway,
     LegacyMarkdownRepository,
     LegacyReportGateway,
+    build_application_service,
 )
 from jobtracker.services import ProjectContext, load_project_context, save_profile
 from jobtracker.webapp import create_app
@@ -107,27 +108,41 @@ class ApplicationServiceTests(unittest.TestCase):
                 root / "reports",
                 root / "profile",
             )
-            repository = LegacyMarkdownRepository(context)
-            reports = FakeReports(root / "report.md")
-            service = JobTrackerService(context, repository, repository, reports, FakeDocuments())
+            context = ProjectContext(
+                {"applicant": {"name": "Test User"}},
+                root / "input", root / "jobs", root / "reports", root / "profile",
+                database=root / "jobtracker.sqlite3", files_dir=root / "files",
+            )
+            service = build_application_service(context)
 
             created = service.create_job(
                 JobApplication(company="Example", role="Engineer", date_applied="2026-07-18"),
                 "Description",
             )
-            updated = service.update_job(created.folder.name, updates={"status": "rejected"}, note="Closed")
+            updated = service.update_job(created.application_id, updates={"status": "rejected"}, note="Closed")
 
             self.assertEqual(updated.job.status, "rejected")
             self.assertEqual(service.list_jobs(status="rejected").loaded_count, 1)
-            self.assertEqual(reports.write_count, 2)
             self.assertEqual(
                 service.save_profile(
                     {"personal": {}, "skills": ["Python"], "experience": "Experience"}
                 )["skills"],
                 ["Python"],
             )
-            self.assertEqual(service.generate_cv_draft(created.folder.name), "# Generated")
-            self.assertEqual(service.render_cv_pdf(created.folder.name), b"Engineer:# Generated")
+
+    def test_report_failure_does_not_undo_committed_job(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            context = ProjectContext(
+                {}, root / "input", root / "jobs", root / "reports", root / "profile",
+                database=root / "jobtracker.sqlite3", files_dir=root / "files",
+            )
+            service = build_application_service(context)
+            with patch.object(service.reports, "write_default", side_effect=OSError("disk full")):
+                result = service.create_job(JobApplication(company="Example", role="Engineer"), "Description")
+
+            self.assertIn("Report refresh failed", result.report_warning)
+            self.assertEqual(service.get_job(result.application_id).job.company, "Example")
 
     def test_cli_and_api_use_the_same_injected_application_service(self) -> None:
         class SharedService:

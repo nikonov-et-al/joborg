@@ -383,11 +383,11 @@ def list_job_records(jobs_dir: Path) -> LoadJobsResult:
     return load_jobs(jobs_dir)
 
 
-def job_record_to_dict(folder: Path, job: JobApplication) -> dict[str, Any]:
+def job_record_to_dict(application_id: str | Path, job: JobApplication) -> dict[str, Any]:
     data = job.to_metadata()
-    data["id"] = folder.name
-    data["job_id"] = folder.name
-    data["folder"] = folder.as_posix()
+    identifier = application_id.name if isinstance(application_id, Path) else application_id
+    data["id"] = identifier
+    data["job_id"] = identifier
     return data
 
 

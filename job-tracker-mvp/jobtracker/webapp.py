@@ -16,7 +16,6 @@ from .pdf import render_cv_pdf
 from .reports import build_report_data, report_data_to_dict, render_report_pdf, write_report_data
 from .repositories import (
     LegacyDocumentGateway,
-    LegacyMarkdownRepository,
     LegacyReportGateway,
     build_application_service,
 )
@@ -30,26 +29,7 @@ router = APIRouter()
 
 def _build_application_service() -> JobTrackerService:
     context = load_project_context()
-    if context.database is not None and context.files_dir is not None:
-        return build_application_service(context)
-    repository = LegacyMarkdownRepository(context)
-    return JobTrackerService(
-        context,
-        repository,
-        repository,
-        LegacyReportGateway(
-            context,
-            write_default_fn=write_project_report,
-            build_fn=build_report_data,
-            write_data_fn=write_report_data,
-            render_pdf_fn=render_report_pdf,
-        ),
-        LegacyDocumentGateway(
-            context,
-            generate_fn=generate_cv_draft_with_llm,
-            render_fn=render_cv_pdf,
-        ),
-    )
+    return build_application_service(context)
 
 
 def get_application_service(request: Request) -> JobTrackerService:
@@ -168,7 +148,7 @@ def api_list_jobs(
     service: JobTrackerService = Depends(get_application_service),
 ) -> list[dict[str, Any]] | dict[str, Any]:
     loaded = service.list_jobs(status=status, month=month)
-    serialized_jobs = [job_record_to_dict(folder, job) for folder, job in loaded.jobs]
+    serialized_jobs = [job_record_to_dict(job_id, job) for job_id, job in loaded.jobs]
     response.headers["X-Jobtracker-Loaded-Count"] = str(len(serialized_jobs))
     response.headers["X-Jobtracker-Failed-Count"] = str(loaded.failed_count)
     if loaded.errors:
@@ -193,15 +173,12 @@ def api_get_job(
     except RecordNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Job not found") from exc
     job = details.job
-    result = job_record_to_dict(details.folder, job)
+    result = job_record_to_dict(details.application_id, job)
     result["body"] = details.body
     result["job_description"] = details.job_description
     result["files"] = {
-        "cv": [job.cv_file] if job.cv_file else [],
-        "motivation_letter": [job.motivation_letter_file] if job.motivation_letter_file else [],
-        "attachments": job.attachments,
-        "evidence": job.evidence,
-        "screenshots": job.screenshots,
+        category: [asdict(document) for document in details.documents if document.category == category]
+        for category in ("cv", "motivation_letter", "attachments", "evidence", "screenshots")
     }
     result["cv_draft"] = details.cv_draft
     return result
@@ -227,7 +204,7 @@ def api_update_job(
         raise HTTPException(status_code=404, detail="Job not found") from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return job_record_to_dict(result.folder, result.job)
+    return job_record_to_dict(result.application_id, result.job)
 
 
 @router.post("/api/jobs", status_code=HTTP_201_CREATED)
@@ -295,9 +272,9 @@ async def api_create_job(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    response = job_record_to_dict(result.folder, result.job)
-    response["stored_files"] = list(result.stored_paths)
-    response["report_path"] = result.report_path.as_posix()
+    response = job_record_to_dict(result.application_id, result.job)
+    response["documents"] = [asdict(document) for document in result.documents]
+    response["report_warning"] = result.report_warning
     return response
 
 
@@ -333,9 +310,9 @@ async def _attach_impl(
         raise HTTPException(status_code=404, detail="Job not found") from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    response = job_record_to_dict(result.folder, result.job)
-    response["stored_files"] = list(result.stored_paths)
-    response["report_path"] = result.report_path.as_posix()
+    response = job_record_to_dict(result.application_id, result.job)
+    response["documents"] = [asdict(document) for document in result.documents]
+    response["report_warning"] = result.report_warning
     return response
 
 
@@ -387,7 +364,7 @@ def api_report(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {
-        "report_path": artifact.path.as_posix(),
+        "artifact_id": artifact.artifact_id,
         "content": artifact.content,
         "data": report_data_to_dict(artifact.data),
     }
@@ -462,7 +439,7 @@ def api_generate_cv_draft(
         raise HTTPException(status_code=404, detail="Job not found") from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"CV generation failed: {exc}") from exc
-    return {"job_id": job_id, "content": content, "path": "cv/generated_cv.md"}
+    return {"job_id": job_id, "content": content}
 
 
 @router.post("/api/jobs/{job_id}/cv-pdf")
@@ -492,10 +469,10 @@ def api_save_cv_draft(
     service: JobTrackerService = Depends(get_application_service),
 ) -> dict[str, Any]:
     try:
-        path = service.save_cv_draft(job_id, payload.content)
+        document_version_id = service.save_cv_draft(job_id, payload.content)
     except RecordNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Job not found") from exc
-    return {"job_id": job_id, "content": payload.content, "path": path}
+    return {"job_id": job_id, "content": payload.content, "document_version_id": document_version_id}
 
 
 def create_app(service: JobTrackerService | None = None) -> FastAPI:

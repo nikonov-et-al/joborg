@@ -209,7 +209,7 @@ def build_report_data_from_jobs(
             method=job.application_method,
             status=job.status,
             evidence=yes_no(bool(job.evidence or job.screenshots or job.attachments)),
-            folder=folder.as_posix(),
+            folder=folder.name if isinstance(folder, Path) else folder,
             details=_detail_items(job),
         )
         for folder, job in jobs

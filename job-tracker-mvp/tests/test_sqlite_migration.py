@@ -133,28 +133,28 @@ class SQLiteRepositoryTests(unittest.TestCase):
                 required_skills=["Python"],
             )
 
-            folder, created, stored = repository.create(
+            application_id, created, stored = repository.create(
                 job,
                 "Raw description",
                 [UploadedAsset("../proof.txt", b"proof", "evidence")],
             )
-            UUID(folder.name)
+            UUID(application_id)
             self.assertEqual(created.required_skills, ["Python"])
             self.assertEqual(len(stored), 1)
-            self.assertEqual(repository.file_store.resolve(stored[0]).read_bytes(), b"proof")
+            self.assertEqual(stored[0].original_filename, "proof.txt")
 
-            details = repository.get(folder.name)
+            details = repository.get(application_id)
             self.assertEqual(details.job_description, "Raw description")
-            self.assertEqual(details.job.evidence, stored)
+            self.assertEqual(details.job.evidence, [])
+            self.assertEqual(details.documents, tuple(stored))
             self.assertEqual(repository.list().loaded_count, 1)
 
             connection = connect_database(root / "jobtracker.sqlite3", initialize=False)
             try:
                 document = connection.execute("SELECT * FROM documents").fetchone()
-                self.assertEqual(document["application_id"], folder.name)
+                self.assertEqual(document["application_id"], application_id)
                 self.assertEqual(document["category"], "evidence")
                 self.assertEqual(document["original_filename"], "proof.txt")
-                self.assertEqual(document["stored_path"], stored[0])
                 self.assertEqual(document["sha256"], hashlib.sha256(b"proof").hexdigest())
                 self.assertEqual(document["mime_type"], "text/plain")
                 self.assertEqual(document["size"], 5)
@@ -163,7 +163,7 @@ class SQLiteRepositoryTests(unittest.TestCase):
                 connection.close()
 
             _, updated, attached = repository.update(
-                folder.name,
+                application_id,
                 [UploadedAsset("reply.pdf", b"reply", "attachments")],
                 status="interview_invited",
                 status_date="2026-07-19",
@@ -176,11 +176,11 @@ class SQLiteRepositoryTests(unittest.TestCase):
             self.assertEqual(updated.status, "interview_invited")
             self.assertEqual(updated.required_skills, ["Python", "SQL"])
             self.assertEqual(len(attached), 1)
-            self.assertEqual(repository.file_store.resolve(attached[0]).read_bytes(), b"reply")
+            self.assertEqual(attached[0].original_filename, "reply.pdf")
 
-            self.assertEqual(repository.save_cv_draft(folder.name, "# First"), "cv/generated_cv.md")
-            repository.save_cv_draft(folder.name, "# Latest")
-            final = repository.get(folder.name)
+            UUID(repository.save_cv_draft(application_id, "# First"))
+            repository.save_cv_draft(application_id, "# Latest")
+            final = repository.get(application_id)
             self.assertEqual(final.job_description, "Updated raw description")
             self.assertEqual(final.cv_draft, "# Latest\n")
             self.assertIn("Invite received", final.body)
@@ -191,7 +191,7 @@ class SQLiteRepositoryTests(unittest.TestCase):
             repository = SQLiteJobRepository(root / "jobtracker.sqlite3", root / "files")
             job = JobApplication(company="Example", role="Engineer")
 
-            folder, _, stored = repository.create(
+            application_id, _, stored = repository.create(
                 job,
                 "Description",
                 [
@@ -200,17 +200,13 @@ class SQLiteRepositoryTests(unittest.TestCase):
                 ],
             )
 
-            self.assertEqual(len(set(stored)), 2)
-            self.assertEqual(
-                [repository.file_store.resolve(path).read_bytes() for path in stored],
-                [b"first", b"second"],
-            )
+            self.assertEqual(len({document.id for document in stored}), 2)
 
             before = {path for path in (root / "files").rglob("*") if path.is_file()}
             with patch("jobtracker.sqlite_repository.insert_document", side_effect=sqlite3.IntegrityError("injected")):
                 with self.assertRaises(sqlite3.IntegrityError):
                     repository.update(
-                        folder.name,
+                        application_id,
                         [UploadedAsset("orphan.pdf", b"orphan", "attachments")],
                     )
             after = {path for path in (root / "files").rglob("*") if path.is_file()}
@@ -249,10 +245,10 @@ class SQLiteRepositoryTests(unittest.TestCase):
                 "Description",
             )
 
-            UUID(result.folder.name)
+            UUID(result.application_id)
             self.assertEqual(service.list_jobs().loaded_count, 1)
-            self.assertEqual(result.report_path, root / "reports" / "report.md")
-            self.assertTrue(result.report_path.is_file())
+            self.assertFalse(result.report_warning)
+            self.assertTrue((root / "reports" / "report.md").is_file())
             self.assertEqual(service.create_report().data.total, 1)
 
 

@@ -364,8 +364,9 @@ def add(
     _print_load_summary(loaded.loaded_count, loaded.errors)
 
     console.print()
-    console.print(f"[bold green]Created job folder:[/bold green] {result.folder}")
-    console.print(f"[green]Updated report:[/green] {result.report_path}")
+    console.print(f"[bold green]Created job:[/bold green] {result.application_id}")
+    if result.report_warning:
+        console.print(f"[yellow]{result.report_warning}[/yellow]")
 
 
 @app.command()
@@ -434,12 +435,12 @@ def attach() -> None:
         raise typer.Exit(code=1)
 
     try:
-        job_dir = choose_job_folder(jobs)
+        job_id = choose_job_folder(jobs)
     except ValueError as exc:
         console.print(f"[yellow]{exc}[/yellow]")
         raise typer.Exit(code=1)
 
-    job = service.get_job(job_dir.name).job
+    job = service.get_job(job_id).job
 
     console.print()
     console.print(f"[bold]Selected:[/bold] {job.company} — {job.role}")
@@ -469,16 +470,16 @@ def attach() -> None:
 
     if category == "cv":
         for filename in selected_files:
-            planned.append((filename, job_dir / "cv" / Path(filename).name))
+            planned.append((filename, Path("managed") / job_id / "cv" / Path(filename).name))
     elif category == "motivation_letter":
         for filename in selected_files:
-            planned.append((filename, job_dir / "motivation_letter" / Path(filename).name))
+            planned.append((filename, Path("managed") / job_id / "motivation_letter" / Path(filename).name))
     elif category == "job_description":
         for filename in selected_files:
-            planned.append((filename, job_dir / "attachments" / Path(filename).name))
+            planned.append((filename, Path("managed") / job_id / "attachments" / Path(filename).name))
     else:
         for filename in selected_files:
-            planned.append((filename, job_dir / category / Path(filename).name))
+            planned.append((filename, Path("managed") / job_id / category / Path(filename).name))
 
     console.print()
     console.print("[bold]Move summary[/bold]")
@@ -522,7 +523,7 @@ def attach() -> None:
 
     try:
         result = service.attach_files(
-            job_dir.name,
+            job_id,
             assets,
             status=new_status,
             status_date=new_status_date,
@@ -536,8 +537,8 @@ def attach() -> None:
         raise typer.Exit(code=1) from exc
 
     console.print()
-    console.print(f"[bold green]Attached files to:[/bold green] {result.folder}")
-    console.print("[green]Updated job.md and report.md[/green]")
+    console.print(f"[bold green]Attached files to:[/bold green] {result.application_id}")
+    console.print("[green]Updated record and report.[/green]")
 
 
 @app.command("list")
@@ -555,10 +556,10 @@ def list_jobs(
     table.add_column("Company")
     table.add_column("Role")
     table.add_column("Status")
-    table.add_column("Folder")
+    table.add_column("ID")
 
-    for folder, job in jobs:
-        table.add_row(format_date_display(job.date_applied), job.company, job.role, job.status, folder.as_posix())
+    for job_id, job in jobs:
+        table.add_row(format_date_display(job.date_applied), job.company, job.role, job.status, job_id)
 
     console.print(table)
     _print_load_summary(loaded.loaded_count, loaded.errors)

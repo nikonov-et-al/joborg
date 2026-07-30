@@ -8,7 +8,7 @@ import sqlite3
 from typing import Any, Sequence
 from uuid import uuid4
 
-from .application import Asset, JobDetails, RecordNotFoundError
+from .application import Asset, DocumentRef, JobDetails, RecordNotFoundError
 from .database import database_connection
 from .file_store import ManagedFileStore
 from .loading import LoadJobsResult, validate_job_load_metadata
@@ -151,9 +151,6 @@ class SQLiteJobRepository:
         self.files_dir = files_dir
         self.file_store = ManagedFileStore(files_dir)
 
-    def _folder(self, application_id: str) -> Path:
-        return self.files_dir / application_id
-
     def _row(self, connection: sqlite3.Connection, application_id: str) -> sqlite3.Row:
         row = connection.execute(
             "SELECT * FROM applications WHERE id = ?", (application_id,)
@@ -190,26 +187,27 @@ class SQLiteJobRepository:
                 "attachments": [],
             }
         )
-        for document in connection.execute(
-            """
-            SELECT category, stored_path FROM documents
-            WHERE application_id = ? AND is_referenced = 1 ORDER BY created_at, id
-            """,
-            (row["id"],),
-        ):
-            field = _DOCUMENT_FIELDS.get(document["category"], "attachments")
-            if field in {"cv_file", "motivation_letter_file"}:
-                metadata[field] = document["stored_path"]
-            else:
-                metadata[field].append(document["stored_path"])
         return JobApplication.from_metadata(metadata)
+
+    def _documents(
+        self, connection: sqlite3.Connection, application_id: str
+    ) -> tuple[DocumentRef, ...]:
+        rows = connection.execute(
+            """
+            SELECT id, category, original_filename, size, mime_type, sha256
+            FROM documents WHERE application_id = ? AND is_referenced = 1
+            ORDER BY created_at, id
+            """,
+            (application_id,),
+        )
+        return tuple(DocumentRef(**dict(row)) for row in rows)
 
     def list(self) -> LoadJobsResult:
         with database_connection(self.database) as connection:
             rows = connection.execute(
                 "SELECT * FROM applications ORDER BY date_applied, id"
             ).fetchall()
-            jobs = [(self._folder(row["id"]), self._job(connection, row)) for row in rows]
+            jobs = [(row["id"], self._job(connection, row)) for row in rows]
         return LoadJobsResult(jobs, [])
 
     def get(self, job_id: str) -> JobDetails:
@@ -225,11 +223,12 @@ class SQLiteJobRepository:
                 (job_id,),
             ).fetchone()
             return JobDetails(
-                folder=self._folder(job_id),
+                application_id=job_id,
                 job=job,
                 body=row["body"],
                 job_description=row["job_description"],
                 cv_draft=draft["content"] if draft else "",
+                documents=self._documents(connection, job_id),
             )
 
     def _store_assets(
@@ -237,8 +236,8 @@ class SQLiteJobRepository:
         connection: sqlite3.Connection,
         application_id: str,
         assets: Sequence[Asset],
-    ) -> tuple[list[str], list[str]]:
-        stored: list[str] = []
+    ) -> tuple[list[DocumentRef], list[str]]:
+        stored: list[DocumentRef] = []
         created: list[str] = []
         try:
             for asset in assets:
@@ -247,7 +246,6 @@ class SQLiteJobRepository:
                     raise ValueError(f"Invalid file category: {asset.category}")
                 managed = self.file_store.store_bytes(asset.filename, asset.content)
                 created.append(managed.stored_path)
-                stored.append(managed.stored_path)
                 insert_document(
                     connection,
                     application_id,
@@ -258,6 +256,12 @@ class SQLiteJobRepository:
                     size=managed.size,
                     mime_type=managed.mime_type,
                 )
+                row = connection.execute(
+                    """SELECT id, category, original_filename, size, mime_type, sha256
+                    FROM documents WHERE application_id = ? AND stored_path = ?""",
+                    (application_id, managed.stored_path),
+                ).fetchone()
+                stored.append(DocumentRef(**dict(row)))
         except Exception:
             for stored_path in created:
                 self.file_store.remove(stored_path)
@@ -269,7 +273,7 @@ class SQLiteJobRepository:
         job: JobApplication,
         job_description: str,
         assets: Sequence[Asset] = (),
-    ) -> tuple[Path, JobApplication, list[str]]:
+    ) -> tuple[str, JobApplication, list[DocumentRef]]:
         application_id = str(uuid4())
         created_files: list[str] = []
         try:
@@ -292,7 +296,7 @@ class SQLiteJobRepository:
                     """,
                     (application_id, job.status, job.status_date or job.date_applied, "Application record created", "", _now()),
                 )
-            return self._folder(application_id), self.get(application_id).job, stored
+            return application_id, self.get(application_id).job, stored
         except Exception:
             for stored_path in created_files:
                 self.file_store.remove(stored_path)
@@ -309,7 +313,7 @@ class SQLiteJobRepository:
         category: str = "",
         updates: dict[str, Any] | None = None,
         job_description: str | None = None,
-    ) -> tuple[Path, JobApplication, list[str]]:
+    ) -> tuple[str, JobApplication, list[DocumentRef]]:
         changes = dict(updates or {})
         if status is not None:
             changes["status"] = status
@@ -371,7 +375,7 @@ class SQLiteJobRepository:
                         """,
                         (job_id, updated.status, updated.status_date or today_iso(), note, category, _now()),
                     )
-            return self._folder(job_id), self.get(job_id).job, stored
+            return job_id, self.get(job_id).job, stored
         except Exception:
             for stored_path in created_files:
                 self.file_store.remove(stored_path)
@@ -387,12 +391,13 @@ class SQLiteJobRepository:
                 """,
                 (job_id,),
             ).fetchone()[0]
+            version_id = str(uuid4())
             connection.execute(
                 """
                 INSERT INTO document_versions
                     (id, application_id, document_type, version, content, approval_status, created_at)
                 VALUES (?, ?, 'cv', ?, ?, 'draft', ?)
                 """,
-                (str(uuid4()), job_id, version, content.rstrip() + "\n", _now()),
+                (version_id, job_id, version, content.rstrip() + "\n", _now()),
             )
-        return "cv/generated_cv.md"
+        return version_id

@@ -199,16 +199,16 @@ def confirm_extracted_fields(data: dict) -> dict:
     return confirmed
 
 
-def choose_job_folder(jobs: list[tuple[Path, object]]) -> Path:
+def choose_job_folder(jobs: list[tuple[str, object]]) -> str:
     """
     Let the user select a job folder from loaded jobs.
-    `jobs` is a list of (folder, JobApplication).
+    `jobs` is a list of (application ID, JobApplication).
     """
     if not jobs:
         raise ValueError("No jobs found.")
 
     choices: list[str] = []
-    choice_to_folder: dict[str, Path] = {}
+    choice_to_folder: dict[str, str] = {}
 
     for index, (folder, job) in enumerate(jobs, start=1):
         label = f"{index}. {format_date_display(job.date_applied)} | {job.company} | {job.role} | {job.status}"

@@ -5,7 +5,7 @@ import shutil
 import subprocess
 from typing import Any, Callable, Sequence
 
-from .application import JobDetails, JobTrackerService, RecordNotFoundError
+from .application import DocumentRef, JobDetails, JobTrackerService, RecordNotFoundError
 from .llm import generate_cv_draft_with_llm
 from .markdown import atomic_write_text, read_markdown_with_frontmatter
 from .models import JobApplication
@@ -34,7 +34,7 @@ from .sqlite_repository import SQLiteJobRepository
 
 
 class LegacyMarkdownRepository:
-    """Repository adapter preserving the existing Markdown directory format."""
+    """Read-only adapter for legacy Markdown inspection and migration support."""
 
     def __init__(self, context: ProjectContext) -> None:
         self.context = context
@@ -45,7 +45,8 @@ class LegacyMarkdownRepository:
         return self.context.jobs_dir / job_id
 
     def list(self) -> LoadJobsResult:
-        return list_job_records(self.context.jobs_dir)
+        loaded = list_job_records(self.context.jobs_dir)
+        return type(loaded)([(folder.name, job) for folder, job in loaded.jobs], loaded.errors)
 
     def get(self, job_id: str) -> JobDetails:
         job_dir = self._job_dir(job_id)
@@ -57,13 +58,14 @@ class LegacyMarkdownRepository:
         description_path = job_dir / "job_description.md"
         draft_path = job_dir / "cv" / "generated_cv.md"
         return JobDetails(
-            folder=job_dir,
+            application_id=job_id,
             job=job,
             body=body,
             job_description=(
                 description_path.read_text(encoding="utf-8") if description_path.exists() else ""
             ),
             cv_draft=draft_path.read_text(encoding="utf-8") if draft_path.exists() else "",
+            documents=(),
         )
 
     def create(
@@ -71,10 +73,8 @@ class LegacyMarkdownRepository:
         job: JobApplication,
         job_description: str,
         assets: Sequence[UploadedAsset] = (),
-    ) -> tuple[Path, JobApplication, list[str]]:
-        job_dir = self.context.jobs_dir / job.folder_name()
-        created, stored_paths = create_job_record(job_dir, job, job_description, assets)
-        return job_dir, created, stored_paths
+    ) -> tuple[str, JobApplication, list[DocumentRef]]:
+        raise RuntimeError("Legacy Markdown storage is read-only; migrate to SQLite before creating jobs")
 
     def update(
         self,
@@ -87,27 +87,11 @@ class LegacyMarkdownRepository:
         category: str = "",
         updates: dict[str, Any] | None = None,
         job_description: str | None = None,
-    ) -> tuple[Path, JobApplication, list[str]]:
-        details = self.get(job_id)
-        updated, stored_paths = apply_job_update(
-            details.folder,
-            details.job,
-            assets,
-            status=status,
-            status_date=status_date,
-            note=note,
-            category=category,
-            updates=updates,
-            job_description=job_description,
-        )
-        return details.folder, updated, stored_paths
+    ) -> tuple[str, JobApplication, list[DocumentRef]]:
+        raise RuntimeError("Legacy Markdown storage is read-only; migrate to SQLite before updating jobs")
 
     def save_cv_draft(self, job_id: str, content: str) -> str:
-        details = self.get(job_id)
-        draft_path = details.folder / "cv" / "generated_cv.md"
-        draft_path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write_text(draft_path, content.rstrip() + "\n")
-        return draft_path.relative_to(details.folder).as_posix()
+        raise RuntimeError("Legacy Markdown storage is read-only; migrate to SQLite before saving drafts")
 
     def get_profile(self) -> dict[str, Any]:
         return load_profile(self.context.profile_dir)
@@ -282,12 +266,10 @@ class SQLiteReportGateway:
 
 def build_application_service(context: ProjectContext) -> JobTrackerService:
     profiles = LegacyMarkdownRepository(context)
-    if context.database is not None and context.files_dir is not None:
-        repository = SQLiteJobRepository(context.database, context.files_dir)
-        reports = SQLiteReportGateway(context, repository)
-    else:
-        repository = profiles
-        reports = LegacyReportGateway(context)
+    if context.database is None or context.files_dir is None:
+        raise RuntimeError("SQLite runtime storage is required; legacy Markdown storage is read-only")
+    repository = SQLiteJobRepository(context.database, context.files_dir)
+    reports = SQLiteReportGateway(context, repository)
     return JobTrackerService(
         context,
         repository,

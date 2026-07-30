@@ -144,7 +144,7 @@ class ReportFeatureTests(unittest.TestCase):
 
             self.assertEqual(report.status_code, 200)
             payload = report.json()
-            self.assertEqual(payload["report_path"], (context.reports_dir / "2026-06" / "report.md").as_posix())
+            self.assertEqual(payload["artifact_id"], "2026-06")
             self.assertEqual(payload["data"]["total"], 1)
             self.assertEqual(payload["data"]["rows"][0]["company"], "Example Corp")
             self.assertIn("Example Corp", payload["content"])
@@ -174,18 +174,18 @@ class ReportFeatureTests(unittest.TestCase):
                 invalid = client.post("/api/report?month_number=13")
 
             self.assertEqual(all_jobs.json()["data"]["total"], 3)
-            self.assertEqual(all_jobs.json()["report_path"], (context.reports_dir / "report.md").as_posix())
+            self.assertEqual(all_jobs.json()["artifact_id"], "all")
             self.assertEqual(june.json()["data"]["total"], 2)
             self.assertEqual(
-                june.json()["report_path"],
-                (context.reports_dir / "all-years-06" / "report.md").as_posix(),
+                june.json()["artifact_id"],
+                "all-years-06",
             )
             self.assertEqual(year.json()["data"]["total"], 2)
-            self.assertEqual(year.json()["report_path"], (context.reports_dir / "2026" / "report.md").as_posix())
+            self.assertEqual(year.json()["artifact_id"], "2026")
             self.assertEqual(june_2026.json()["data"]["total"], 1)
             self.assertEqual(
-                june_2026.json()["report_path"],
-                (context.reports_dir / "2026-06" / "report.md").as_posix(),
+                june_2026.json()["artifact_id"],
+                "2026-06",
             )
             self.assertEqual(legacy.json()["data"]["total"], 1)
             self.assertIn('filename="report-all-years-06.pdf"', pdf.headers["content-disposition"])

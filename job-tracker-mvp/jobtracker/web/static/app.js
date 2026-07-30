@@ -89,7 +89,7 @@ function statusOptions(selected = "", all = false) {
 
 function fileRows(files) {
   const rows = Object.entries(files || {}).flatMap(([category, names]) =>
-    list(names).filter(Boolean).map(name => `<li><span class="pill">${label(category)}</span>${esc(name)}</li>`)
+    list(names).filter(Boolean).map(document => `<li><span class="pill">${label(category)}</span>${esc(document.original_filename)}</li>`)
   );
   return rows.length ? `<ul class="file-links">${rows.join("")}</ul>` : `<p class="muted">No files.</p>`;
 }
