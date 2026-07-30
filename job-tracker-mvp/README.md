@@ -53,6 +53,13 @@ The suite redirects implicit Windows application-data paths to pytest-owned
 temporary storage and clears `JOBTRACKER_DATA_DIR` before collection. It does
 not use your live Job Tracker workspace.
 
+## Release
+
+AI, desktop, build, and development dependencies are optional groups. Windows
+release inputs, isolated packaged smoke testing, checksum manifests, signing
+status, upgrade, rollback, and uninstall are documented in
+[`../docs/guides/release.md`](../docs/guides/release.md).
+
 `jobtracker-desktop` opens the existing FastAPI UI in a native pywebview
 window. It reserves an OS-assigned port on `127.0.0.1`, starts Uvicorn in the
 same process, and stops the server when the window closes. Startup and database
