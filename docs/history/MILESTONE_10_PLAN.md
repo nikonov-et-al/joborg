@@ -1,6 +1,8 @@
 # Milestone 10 Plan - Reliability, Testing, and Release Discipline
 
-Status: active
+Status: complete
+
+Completed: 2026-07-30
 
 ## Assumptions
 
@@ -68,3 +70,23 @@ Status: active
 - No code-signing credential or publisher identity committed to Git.
 - No changes to user data, persisted schemas, workspace catalogs, or production
   default paths.
+
+## Completion evidence
+
+- Hermetic full suite: `python -m pytest -q` -> 176 passed and 31 subtests
+  passed in 38.73 seconds.
+- Syntax/dependency checks: JavaScript syntax, Python bytecode compilation,
+  `pip check`, and `git diff --check` passed.
+- Release build: PyInstaller 6.21.0 on CPython 3.14.4 produced the current
+  unsigned Windows development executable.
+- Packaged smoke: executable ran twice against a disposable
+  `JOBTRACKER_DATA_DIR`, created SQLite storage, and preserved an existing
+  sentinel without invoking system Python.
+- Artifact manifest: 38,775,362 bytes; SHA-256
+  `53ad8846dd1ff6dff161d48f69bb32704404dce1e49177e2e2db5c0debbb4791`;
+  no absolute path or user data.
+- Synthetic baseline: 50-record list median 2.419 ms/51 SELECTs; 1,000-record
+  list median 70.612 ms/1,001 SELECTs. No optimization justified.
+- Shared production distribution remains gated on an external code-signing
+  identity; current output is documented and manifested as
+  `unsigned-development`.

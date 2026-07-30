@@ -34,6 +34,9 @@ designs, or commands that should not be run against current data. Use the root
 - [`MILESTONE_9_PLAN.md`](MILESTONE_9_PLAN.md) - loopback API trust tokens,
   safe public settings, input validation, bounded uploads, and local threat
   model.
+- [`MILESTONE_10_PLAN.md`](MILESTONE_10_PLAN.md) - hermetic verification,
+  locked release inputs, safe storage diagnostics, packaged smoke testing, and
+  evidence-driven performance baseline.
 
 ## History rules
 
