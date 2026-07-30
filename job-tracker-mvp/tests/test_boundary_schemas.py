@@ -50,6 +50,16 @@ class BoundarySchemaTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             CvDraftSchema.model_validate({"content": 42})
 
+    def test_rejects_unsafe_urls_dates_controls_and_oversized_lists(self) -> None:
+        for payload in (
+            {"job_url": "javascript:alert(1)"},
+            {"date_applied": "2026-99-01"},
+            {"summary": "bad\x00text"},
+            {"required_skills": ["Python"] * 101},
+        ):
+            with self.subTest(payload=payload), self.assertRaises(ValidationError):
+                JobUpdateSchema.model_validate(payload)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -106,12 +106,13 @@ class DesktopTests(unittest.TestCase):
             log_config=None,
             log_level="warning",
         )
-        fake_webview.create_window.assert_called_once_with(
-            "Job Tracker",
-            f"http://127.0.0.1:{fake_server.bound_port}/",
-            width=1280,
-            height=800,
+        window_call = fake_webview.create_window.call_args
+        self.assertEqual(window_call.args[0], "Job Tracker")
+        self.assertRegex(
+            window_call.args[1],
+            rf"^http://127\.0\.0\.1:{fake_server.bound_port}/\?token=[A-Za-z0-9_-]+$",
         )
+        self.assertEqual(window_call.kwargs, {"width": 1280, "height": 800})
         self.assertEqual(
             tuple(function.__name__ for function in fake_window.expose.call_args.args),
             desktop.WORKSPACE_API_METHODS,

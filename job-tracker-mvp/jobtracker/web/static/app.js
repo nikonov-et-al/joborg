@@ -1,4 +1,6 @@
 const API = "/api";
+const apiToken = new URLSearchParams(location.search).get("token") || "";
+if (apiToken) history.replaceState(null, "", `${location.pathname}${location.hash}`);
 const STATUSES = [
   "draft", "applied", "confirmation_received", "interview_invited",
   "interview_done", "task_received", "offer_received", "rejected",
@@ -45,6 +47,7 @@ async function request(path, options = {}) {
   const response = await fetch(`${API}${path}`, {
     headers: {
       Accept: "application/json",
+      ...(apiToken ? { "X-Jobtracker-Token": apiToken } : {}),
       ...(options.body instanceof FormData ? {} : { "Content-Type": "application/json" }),
       ...(options.headers || {}),
     },
@@ -56,6 +59,14 @@ async function request(path, options = {}) {
     throw new Error(message || `${response.status} ${response.statusText}`);
   }
   return response.json();
+}
+
+async function download(path, filename) {
+  const response = await fetch(`${API}${path}`, { headers: apiToken ? { "X-Jobtracker-Token": apiToken } : {} });
+  if (!response.ok) throw new Error((await response.json().catch(() => ({}))).detail || "Download failed");
+  const url = URL.createObjectURL(await response.blob());
+  const anchor = Object.assign(document.createElement("a"), { href: url, download: filename });
+  document.body.append(anchor); anchor.click(); anchor.remove(); URL.revokeObjectURL(url);
 }
 
 function routeInfo() {
@@ -283,7 +294,7 @@ function renderReport() {
       <div class="report-controls">
         <label>Month<select id="reportMonth"><option value="">All</option>${MONTHS.map((month, index) => `<option value="${String(index + 1).padStart(2, "0")}">${month}</option>`).join("")}</select></label>
         <label>Year<select id="reportYear"><option value="">All</option>${years.map(year => `<option value="${year}">${year}</option>`).join("")}</select></label>
-        <button data-report-generate>Generate report</button><a class="button secondary" data-download-report href="/api/report/pdf" target="_blank" rel="noreferrer">Download PDF</a>
+        <button data-report-generate>Generate report</button><button class="secondary" data-download-report>Download PDF</button>
       </div>
       <div id="reportArea" class="empty">Generate report to preview it.</div>
     </section>`;
@@ -488,6 +499,11 @@ app.addEventListener("change", event => {
 });
 
 app.addEventListener("click", async event => {
+  if (event.target.closest("[data-download-report]")) {
+    try { await download(`/report/pdf${reportQuery() ? `?${reportQuery()}` : ""}`, "jobtracker-report.pdf"); setStatus("Report PDF downloaded", "ok"); }
+    catch (error) { setStatus(error.message, "bad"); }
+    return;
+  }
   if (event.target.closest("[data-export-workspace]")) {
     try {
       const result = await desktopCall("create_workspace_export");
@@ -602,7 +618,6 @@ app.addEventListener("click", async event => {
       state.report = await request(`/report${query ? `?${query}` : ""}`, { method: "POST" });
       document.querySelector("#reportArea").className = "";
       document.querySelector("#reportArea").innerHTML = reportHtml(state.report);
-      document.querySelector("[data-download-report]").href = `${API}/report/pdf${query ? `?${query}` : ""}`;
       setStatus("Report generated", "ok");
     } catch (error) { setStatus(error.message, "bad"); }
     return;

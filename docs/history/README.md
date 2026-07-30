@@ -31,6 +31,9 @@ designs, or commands that should not be run against current data. Use the root
   recovery backups, retention, and verified workspace exports.
 - [`MILESTONE_8_PLAN.md`](MILESTONE_8_PLAN.md) - stable application/document
   contracts, report-failure recovery, and legacy write retirement.
+- [`MILESTONE_9_PLAN.md`](MILESTONE_9_PLAN.md) - loopback API trust tokens,
+  safe public settings, input validation, bounded uploads, and local threat
+  model.
 
 ## History rules
 

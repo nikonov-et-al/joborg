@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from importlib import import_module
 import os
 from pathlib import Path
+import secrets
 import socket
 import sqlite3
 import sys
@@ -298,6 +299,7 @@ def _initialize_application(
     data_dir: str | Path | None = None,
     *,
     enforce_workspace: bool = False,
+    api_token: str | None = None,
 ) -> Any:
     context = load_project_context(
         data_dir=data_dir,
@@ -307,7 +309,7 @@ def _initialize_application(
     service.list_jobs()  # Open/upgrade SQLite before showing the window.
     if not (STATIC_DIR / "index.html").is_file():
         raise RuntimeError("Bundled web UI is missing")
-    return create_app(service)
+    return create_app(service, api_token=api_token)
 
 
 def _reserve_loopback_socket() -> tuple[socket.socket, int]:
@@ -348,10 +350,12 @@ class _ServerHandle:
     thread: Thread
     errors: list[BaseException]
     port: int
+    api_token: str
 
 
 def _start_application(data_dir: Path) -> _ServerHandle:
-    application = _initialize_application(data_dir, enforce_workspace=True)
+    api_token = secrets.token_urlsafe(32)
+    application = _initialize_application(data_dir, enforce_workspace=True, api_token=api_token)
     listener, port = _reserve_loopback_socket()
     server = uvicorn.Server(
         uvicorn.Config(
@@ -372,7 +376,7 @@ def _start_application(data_dir: Path) -> _ServerHandle:
         server.should_exit = True
         thread.join(timeout=2)
         raise
-    return _ServerHandle(server, thread, errors, port)
+    return _ServerHandle(server, thread, errors, port, api_token)
 
 
 def _stop_application(handle: _ServerHandle | None) -> None:
@@ -1059,9 +1063,10 @@ def run_desktop() -> None:
 
     try:
         if handle is not None:
+            token = handle.api_token if isinstance(getattr(handle, "api_token", ""), str) else ""
             window = webview.create_window(
                 "Job Tracker",
-                f"http://{HOST}:{handle.port}/",
+                f"http://{HOST}:{handle.port}/" + (f"?token={token}" if token else ""),
                 width=1280,
                 height=800,
             )
