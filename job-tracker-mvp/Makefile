@@ -13,3 +13,6 @@ export:
 
 privacy-check:
 	python scripts/check_repo_privacy.py
+
+test:
+	python -m pytest

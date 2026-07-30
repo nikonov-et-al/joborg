@@ -19,6 +19,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+dev = ["pytest>=8"]
 desktop = ["pywebview>=6.0,<7"]
 build = ["pyinstaller>=6.0,<7"]
 
