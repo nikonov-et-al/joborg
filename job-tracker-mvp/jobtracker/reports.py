@@ -90,8 +90,7 @@ def load_jobs(jobs_dir: Path) -> LoadJobsResult:
             errors.append(error)
             log = logger.warning if error.code == "unexpected_load_error" else logger.info
             log(
-                "Job record load failed path=%s code=%s exception_type=%s",
-                error.path,
+                "Job record load failed code=%s exception_type=%s",
                 error.code,
                 error.exception_type,
             )

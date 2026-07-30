@@ -1,13 +1,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from hashlib import sha256
 from importlib import import_module
+import json
+import logging
+from logging.handlers import RotatingFileHandler
 import os
 from pathlib import Path
 import secrets
+import shutil
 import socket
 import sqlite3
 import sys
+from tempfile import NamedTemporaryFile
 from threading import Lock, Thread
 from time import monotonic, sleep
 from typing import Any, Callable, Sequence
@@ -16,11 +23,11 @@ import uvicorn
 
 from jobtracker import __version__
 from jobtracker.backups import (
-    assert_database_healthy,
     create_workspace_export,
     list_migration_backups,
 )
 from jobtracker.database import MIN_SUPPORTED_SCHEMA_VERSION, SCHEMA_VERSION
+from jobtracker.file_store import ManagedFileStore
 from jobtracker.paths import (
     WorkspaceCatalog,
     WorkspaceRecord,
@@ -72,6 +79,7 @@ WORKSPACE_API_METHODS = (
     "forget_workspace",
     "rename_workspace",
     "get_storage_status",
+    "export_diagnostics",
     "create_workspace_export",
     "cancel_setup",
 )
@@ -83,6 +91,98 @@ def _workspace_display_name(value: str) -> str:
     if len(normalized) > 100 or any(character in normalized for character in "\r\n"):
         raise ValueError("Workspace name must be a single line of at most 100 characters")
     return normalized
+
+
+def _configure_file_logging(
+    workspace: Path,
+    *,
+    max_bytes: int = 512 * 1024,
+    backup_count: int = 3,
+) -> RotatingFileHandler:
+    logger = logging.getLogger("jobtracker")
+    for handler in tuple(logger.handlers):
+        if handler.get_name() == "jobtracker-file":
+            logger.removeHandler(handler)
+            handler.close()
+    log_path = workspace / "logs" / "jobtracker.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    handler = RotatingFileHandler(
+        log_path,
+        maxBytes=max_bytes,
+        backupCount=backup_count,
+        encoding="utf-8",
+        delay=True,
+    )
+    handler.set_name("jobtracker-file")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    return handler
+
+
+def _file_sha256(path: Path) -> str:
+    digest = sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _managed_file_health(
+    connection: sqlite3.Connection,
+    files_dir: Path,
+) -> dict[str, int]:
+    rows = connection.execute(
+        "SELECT stored_path, sha256, size FROM documents ORDER BY id"
+    ).fetchall()
+    store = ManagedFileStore(files_dir)
+    counts = {"total": len(rows), "healthy": 0, "missing": 0, "corrupt": 0}
+    for stored_path, expected_hash, expected_size in rows:
+        try:
+            path = store.resolve(stored_path)
+            if not path.is_file():
+                counts["missing"] += 1
+            elif path.stat().st_size != expected_size or _file_sha256(path) != expected_hash:
+                counts["corrupt"] += 1
+            else:
+                counts["healthy"] += 1
+        except (OSError, ValueError):
+            counts["corrupt"] += 1
+    return counts
+
+
+def _workspace_size(workspace: Path) -> int:
+    total = 0
+    for path in workspace.rglob("*"):
+        try:
+            if path.is_file() and not path.is_symlink():
+                total += path.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+def _backup_age(
+    workspace: Path,
+    migration_backups: list[Any],
+) -> tuple[str | None, int | None]:
+    moments = [
+        datetime.fromisoformat(backup.created_at.replace("Z", "+00:00"))
+        for backup in migration_backups
+    ]
+    export_dir = workspace / "backups" / "exports"
+    if export_dir.is_dir():
+        moments.extend(
+            datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+            for path in export_dir.glob("*.zip")
+            if path.is_file()
+        )
+    if not moments:
+        return None, None
+    latest = max(moments).astimezone(timezone.utc)
+    age = max(0, int((datetime.now(timezone.utc) - latest).total_seconds() // 86400))
+    return latest.isoformat().replace("+00:00", "Z"), age
 
 
 def _run_folder_dialog(window: Any, callback: Callable[[], Any]) -> Any:
@@ -305,6 +405,8 @@ def _initialize_application(
         data_dir=data_dir,
         enforce_workspace=enforce_workspace,
     )
+    if context.database is not None:
+        _configure_file_logging(context.database.parent)
     service = build_application_service(context)
     service.list_jobs()  # Open/upgrade SQLite before showing the window.
     if not (STATIC_DIR / "index.html").is_file():
@@ -695,23 +797,97 @@ class WorkspaceBridge:
         database = self.active / "jobtracker.sqlite3"
         connection = sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True)
         try:
-            assert_database_healthy(connection)
+            integrity = [
+                str(row[0]) for row in connection.execute("PRAGMA integrity_check")
+            ]
+            foreign_key_violations = len(
+                connection.execute("PRAGMA foreign_key_check").fetchall()
+            )
             schema_version = int(
                 connection.execute("PRAGMA user_version").fetchone()[0]
             )
+            managed_files = _managed_file_health(connection, self.active / "files")
         finally:
             connection.close()
+        migration_backups = list_migration_backups(database)
+        latest_backup_at, backup_age_days = _backup_age(
+            self.active,
+            migration_backups,
+        )
         return {
+            "read_only": True,
             "schema_version": schema_version,
+            "database_integrity": "ok" if integrity == ["ok"] else "failed",
+            "foreign_key_violations": foreign_key_violations,
+            "managed_files": managed_files,
+            "workspace_size_bytes": _workspace_size(self.active),
+            "free_space_bytes": shutil.disk_usage(self.active).free,
+            "latest_backup_at": latest_backup_at,
+            "backup_age_days": backup_age_days,
             "backup_location": str(self.active / "backups"),
             "migration_backups": [
-                backup.public_dict() for backup in list_migration_backups(database)
+                backup.public_dict() for backup in migration_backups
             ],
             "recovery": (
                 "Close Job Tracker before restore. Preserve the failed database, "
                 "copy jobtracker.sqlite3 from a verified migration backup into the "
                 "workspace, then restart."
             ),
+        }
+
+    def export_diagnostics(self) -> dict[str, Any]:
+        if self.active is None:
+            raise ValueError("No active workspace")
+        status = self.get_storage_status()
+        storage = {
+            key: status[key]
+            for key in (
+                "read_only",
+                "schema_version",
+                "database_integrity",
+                "foreign_key_violations",
+                "managed_files",
+                "workspace_size_bytes",
+                "free_space_bytes",
+                "latest_backup_at",
+                "backup_age_days",
+            )
+        }
+        payload = {
+            "format_version": 1,
+            "application_version": __version__,
+            "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "storage": storage,
+        }
+        directory = self.active / "backups" / "diagnostics"
+        directory.mkdir(parents=True, exist_ok=True)
+        destination = directory / (
+            "jobtracker-diagnostics-"
+            f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.json"
+        )
+        temporary_path: Path | None = None
+        try:
+            with NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                dir=directory,
+                prefix=".diagnostics-",
+                suffix=".tmp",
+                delete=False,
+            ) as temporary:
+                temporary_path = Path(temporary.name)
+                json.dump(payload, temporary, indent=2, sort_keys=True)
+                temporary.write("\n")
+                temporary.flush()
+                os.fsync(temporary.fileno())
+            os.replace(temporary_path, destination)
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
+        return {
+            "path": str(destination),
+            "included": list(storage),
+            "message": "Privacy-safe diagnostic summary exported",
         }
 
     def create_workspace_export(self) -> dict[str, str]:

@@ -27,6 +27,16 @@ const label = (value = "") => String(value).replaceAll("_", " ").replace(/\b\w/g
 const list = value => Array.isArray(value) ? value : [];
 const csvList = value => String(value || "").split(",").map(item => item.trim()).filter(Boolean);
 const ageDays = value => Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 86400000));
+const formatBytes = value => {
+  const bytes = Number(value);
+  if (!Number.isFinite(bytes) || bytes < 0) return "unknown";
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let size = bytes;
+  let unit = -1;
+  do { size /= 1024; unit += 1; } while (size >= 1024 && unit < units.length - 1);
+  return `${size.toFixed(size >= 10 ? 0 : 1)} ${units[unit]}`;
+};
 
 function displayDate(value = "") {
   const text = String(value);
@@ -421,6 +431,26 @@ async function renderSettings() {
     </section>
     <section class="card">
       <div class="section-head">
+        <div><h2>Storage health</h2>
+          <p>Read-only preview. Diagnostic exports include only these counts, versions, sizes, and status values.</p>
+        </div>
+        <button type="button" class="secondary" data-export-diagnostics>Export diagnostic summary</button>
+      </div>
+      <ul class="file-links">
+        <li>Database integrity: ${esc(state.storage?.database_integrity || "unknown")}</li>
+        <li>Foreign-key violations: ${esc(state.storage?.foreign_key_violations ?? "unknown")}</li>
+        <li>Managed files: ${esc(state.storage?.managed_files?.healthy ?? 0)} healthy,
+          ${esc(state.storage?.managed_files?.missing ?? 0)} missing,
+          ${esc(state.storage?.managed_files?.corrupt ?? 0)} corrupt</li>
+        <li>Workspace size: ${esc(formatBytes(state.storage?.workspace_size_bytes))};
+          free disk: ${esc(formatBytes(state.storage?.free_space_bytes))}</li>
+        <li>Latest backup: ${state.storage?.latest_backup_at
+          ? `${esc(state.storage.latest_backup_at)} (${esc(state.storage.backup_age_days)} days old)`
+          : "none"}</li>
+      </ul>
+    </section>
+    <section class="card">
+      <div class="section-head">
         <div><h2>Backup and export</h2>
           <p>Schema version ${esc(state.storage?.schema_version || "")}. Migration backups are retained separately from user exports.</p>
           <p class="workspace-path">${esc(state.storage?.backup_location || "")}</p>
@@ -508,6 +538,13 @@ app.addEventListener("click", async event => {
     try {
       const result = await desktopCall("create_workspace_export");
       await renderSettings();
+      setStatus(`${result.message}: ${result.path}`, "ok");
+    } catch (error) { setStatus(error.message, "bad"); }
+    return;
+  }
+  if (event.target.closest("[data-export-diagnostics]")) {
+    try {
+      const result = await desktopCall("export_diagnostics");
       setStatus(`${result.message}: ${result.path}`, "ok");
     } catch (error) { setStatus(error.message, "bad"); }
     return;

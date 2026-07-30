@@ -112,6 +112,7 @@ class WebUiFeatureTests(unittest.TestCase):
             "forget_workspace",
             "rename_workspace",
             "get_storage_status",
+            "export_diagnostics",
             "create_workspace_export",
         ):
             self.assertIn(f'"{method}"', self.app_js)
@@ -125,6 +126,10 @@ class WebUiFeatureTests(unittest.TestCase):
         self.assertIn("stored below this folder", self.app_js)
         self.assertIn("active_id", self.app_js)
         self.assertIn("Create verified export", self.app_js)
+        self.assertIn("Export diagnostic summary", self.app_js)
+        self.assertIn("Database integrity:", self.app_js)
+        self.assertIn("Managed files:", self.app_js)
+        self.assertIn("Diagnostic exports include only these counts", self.app_js)
         self.assertIn("Migration backups are retained separately", self.app_js)
         self.assertIn("state.storage?.recovery", self.app_js)
         self.assertIn(".workspace-row", self.styles)
