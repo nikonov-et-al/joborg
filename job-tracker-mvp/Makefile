@@ -10,3 +10,6 @@ report:
 export:
 	job report
 	job export
+
+privacy-check:
+	python scripts/check_repo_privacy.py

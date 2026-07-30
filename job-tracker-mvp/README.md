@@ -72,17 +72,58 @@ Runtime data is independent of the launch directory. By default it is stored
 under the operating system's per-user application-data location. Override it
 for testing or portable recovery with `JOBTRACKER_DATA_DIR`.
 
-The desktop app now treats each data directory as one applicant workspace. On
-first start, choose an empty local folder and enter the required given name,
-family name, and email. Later starts reopen the last-used workspace
-automatically. Use **Settings → Workspaces** to create, open, switch, or forget
-workspaces; forgetting removes only the remembered path and never deletes data.
+On first desktop start, choose one local **Job Tracker data folder**.
+Databases, uploaded files, profiles, and reports for every workspace are kept
+below that folder. New installations require an empty folder; an existing
+single-workspace default folder can be organized in place:
 
-Workspace pointers are stored in `%LOCALAPPDATA%\jobtracker\workspaces.yml`.
-Existing data already stored at `%LOCALAPPDATA%\jobtracker` is adopted without
-moving it. Network drives, UNC paths, and known OneDrive folders are rejected
-because a live SQLite database is unsafe in concurrently synchronized storage.
-`JOBTRACKER_DATA_DIR` bypasses workspace selection for testing and recovery.
+```text
+<data folder>/
+├── workspaces.yml
+└── workspaces/
+    └── jane-example--12ab34cd/
+        ├── jobtracker.sqlite3
+        ├── profile/
+        ├── files/       # created after the first managed upload
+        └── reports/     # created after the first generated report
+```
+
+Workspace folders use a readable profile slug plus a stable ID. The root
+`workspaces.yml` version-2 catalog stores relative folder mappings, display
+names, and the active workspace ID.
+`%LOCALAPPDATA%\jobtracker\settings.yml` stores only the selected data-folder
+location so the desktop app can find the portable catalog on restart.
+
+If the previous single workspace is found directly in
+`%LOCALAPPDATA%\jobtracker`, setup offers to organize that same folder as the
+managed parent. It copies the workspace into a staged child, checks the SQLite
+database and copied files, and activates the child before moving the original
+direct-layout data into `backups/layout-migration-<timestamp>/`. The previous
+registry is retained as `workspaces.v1.yml`; existing backup folders are not
+changed. A journal makes interrupted conversions resumable, and the original
+data is never deleted automatically.
+
+Workspace creation asks for an optional display name. Leaving it blank shows
+the generated folder identity, such as `jane-example--12ab34cd`. Renaming later
+in **Settings → Workspaces** changes only catalog metadata; it never renames
+the folder or changes the stable workspace ID. Settings can also create,
+import, switch, or forget workspaces. Imports are copied into the managed data
+folder; forgetting removes only the catalog entry and never deletes data.
+
+Network drives, UNC paths, and known OneDrive folders are rejected because a
+live SQLite database is unsafe in concurrently synchronized storage.
+`JOBTRACKER_DATA_DIR` bypasses managed workspace selection for testing and
+recovery.
+
+Schema upgrades create a verified SQLite snapshot before the first write under
+`<workspace>/backups/migrations/`. **Settings -> Create verified export** writes
+a separately retained ZIP with the database, managed files, profile, and a
+checksum manifest. Restore only while Job Tracker is closed; see
+[`docs/guides/recovery.md`](../docs/guides/recovery.md).
+
+The desktop runtime creates only storage it uses. `files/` and `reports/` are
+created lazily; the legacy CLI can still create and use `input/` and `jobs/`
+when explicitly invoked.
 
 Uploaded and migrated binaries use managed storage below `files/`. Physical
 names are generated UUIDs split into two-character shard directories, for
@@ -185,7 +226,9 @@ Test it:
 job ai-test
 ```
 
-If you use LM Studio, change `config.yml`:
+Runtime `config.yml` lives in the active data directory, not the source
+checkout. Copy settings from `config.example.yml` and edit the runtime file.
+For LM Studio:
 
 ```yaml
 llm:

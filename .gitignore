@@ -1,0 +1,45 @@
+# Job Tracker runtime data
+/job-tracker-mvp/jobs/
+/job-tracker-mvp/profile/
+/job-tracker-mvp/reports/
+/job-tracker-mvp/input/
+/job-tracker-mvp/files/
+/job-tracker-mvp/backups/
+/job-tracker-mvp/logs/
+/job-tracker-mvp/tmp/
+/job-tracker-mvp/config.yml
+
+# Local data, backups, logs, and archives
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+*.bak
+*.backup
+*.log
+*.rar
+*.7z
+*.zip
+*.pdf
+
+# Explicit synthetic fixtures may use otherwise forbidden formats
+!job-tracker-mvp/tests/fixtures/
+!job-tracker-mvp/tests/fixtures/**
+
+# Python/build/test output
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+build/
+dist/
+
+# Editor and OS output
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

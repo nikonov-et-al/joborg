@@ -1,0 +1,14 @@
+applicant:
+  name: ""
+  email: ""
+
+llm:
+  enabled: false
+  provider: ollama
+  base_url: http://localhost:11434/v1
+  model: ""
+  api_key: local-not-needed
+
+export:
+  create_docx: true
+  create_pdf: true
