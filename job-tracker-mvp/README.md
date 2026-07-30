@@ -59,6 +59,8 @@ AI, desktop, build, and development dependencies are optional groups. Windows
 release inputs, isolated packaged smoke testing, checksum manifests, signing
 status, upgrade, rollback, and uninstall are documented in
 [`../docs/guides/release.md`](../docs/guides/release.md).
+The disposable SQLite timing/query-count command and current decision are in
+[`../docs/reference/performance-baseline.md`](../docs/reference/performance-baseline.md).
 
 `jobtracker-desktop` opens the existing FastAPI UI in a native pywebview
 window. It reserves an OS-assigned port on `127.0.0.1`, starts Uvicorn in the
