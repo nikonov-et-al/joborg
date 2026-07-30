@@ -152,7 +152,7 @@ class ApplicationServiceTests(unittest.TestCase):
             def list_jobs(self, *, status=None, month=None):
                 self.calls.append((status, month))
                 return LoadJobsResult(
-                    [(Path("jobs/example"), JobApplication(company="Shared", role="Service"))],
+                    [("example-id", JobApplication(company="Shared", role="Service"))],
                     [],
                 )
 

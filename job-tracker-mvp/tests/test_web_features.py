@@ -98,7 +98,7 @@ class RouteTests(unittest.TestCase):
         self.assertIn("Generate PDF", app_js)
         self.assertIn("data-generate-cv-pdf", app_js)
         self.assertIn("data-download-report", app_js)
-        self.assertIn("/api/report/pdf", app_js)
+        self.assertIn("download(`/report/pdf", app_js)
         self.assertNotIn("data-print-report", app_js)
 
 

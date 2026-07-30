@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-import hashlib
 import json
 import tempfile
 import unittest
@@ -9,10 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import yaml
-from fastapi.testclient import TestClient
-from typer.testing import CliRunner
 
-from jobtracker import cli
 from jobtracker.markdown import read_markdown_with_frontmatter
 from jobtracker.reports import (
     LoadJobError,
@@ -21,8 +17,7 @@ from jobtracker.reports import (
     load_jobs,
     report_data_to_dict,
 )
-from jobtracker.services import ProjectContext, list_job_records
-from jobtracker.webapp import app
+from jobtracker.services import list_job_records
 
 
 def write_job(jobs_dir: Path, folder: str, metadata: dict | None = None) -> Path:
@@ -40,32 +35,6 @@ def write_job(jobs_dir: Path, folder: str, metadata: dict | None = None) -> Path
     path = job_dir / "job.md"
     path.write_text(f"---\n{frontmatter}---\n\nBody\n", encoding="utf-8")
     return path
-
-
-def context_for(root: Path) -> ProjectContext:
-    return ProjectContext(
-        config={
-            "applicant": {"name": "Test User"},
-            "paths": {
-                "input": str(root / "input"),
-                "jobs": str(root / "jobs"),
-                "reports": str(root / "reports"),
-                "profile": str(root / "profile"),
-            },
-        },
-        input_dir=root / "input",
-        jobs_dir=root / "jobs",
-        reports_dir=root / "reports",
-        profile_dir=root / "profile",
-    )
-
-
-def snapshot(root: Path) -> dict[str, str]:
-    return {
-        path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
-        for path in sorted(root.rglob("*"))
-        if path.is_file()
-    }
 
 
 class LoadErrorsTests(unittest.TestCase):
@@ -256,62 +225,6 @@ class LoadErrorsTests(unittest.TestCase):
                 broken_path.relative_to(jobs_dir).as_posix(),
             )
             json.dumps(data, sort_keys=True)
-
-    def test_jobs_api_preserves_legacy_list_and_optionally_includes_errors(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            context = context_for(root)
-            broken_path = write_job(context.jobs_dir, "2026-07-15_broken_engineer")
-            broken_path.write_text("---\ncompany: Broken\n", encoding="utf-8")
-            write_job(context.jobs_dir, "2026-07-16_good-corp_engineer")
-
-            with patch("jobtracker.webapp.load_project_context", return_value=context):
-                client = TestClient(app)
-                legacy = client.get("/api/jobs")
-                diagnostic = client.get("/api/jobs?include_errors=true")
-
-            self.assertEqual(legacy.status_code, 200)
-            self.assertIsInstance(legacy.json(), list)
-            self.assertEqual(len(legacy.json()), 1)
-            self.assertEqual(legacy.json()[0]["company"], "Good Corp")
-            self.assertEqual(legacy.headers["X-Jobtracker-Loaded-Count"], "1")
-            self.assertEqual(legacy.headers["X-Jobtracker-Failed-Count"], "1")
-
-            self.assertEqual(diagnostic.status_code, 200)
-            payload = diagnostic.json()
-            self.assertEqual(payload["loaded_count"], 1)
-            self.assertEqual(payload["failed_count"], 1)
-            self.assertEqual(len(payload["jobs"]), 1)
-            self.assertEqual(payload["jobs"][0]["company"], "Good Corp")
-            self.assertEqual(len(payload["errors"]), 1)
-            self.assertEqual(payload["errors"][0]["code"], "frontmatter_error")
-            self.assertEqual(
-                payload["errors"][0]["path"],
-                broken_path.relative_to(context.jobs_dir).as_posix(),
-            )
-            self.assertEqual(payload["errors"][0]["exception_type"], "ValueError")
-            self.assertTrue(payload["errors"][0]["message"])
-
-    def test_cli_list_prints_valid_jobs_and_errors_then_exits_nonzero(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            jobs_dir = Path(temp_dir) / "jobs"
-            broken_path = write_job(jobs_dir, "2026-07-15_broken_engineer")
-            broken_path.write_text("---\ncompany: Broken\n", encoding="utf-8")
-            write_job(jobs_dir, "2026-07-16_good-corp_engineer")
-            before = snapshot(jobs_dir)
-            config = {"paths": {"jobs": str(jobs_dir)}}
-
-            with patch.object(cli, "load_config", return_value=config):
-                result = CliRunner().invoke(cli.app, ["list"])
-
-            self.assertNotEqual(result.exit_code, 0)
-            self.assertIn("Good Corp", result.output)
-            self.assertIn(broken_path.parent.name, result.output)
-            self.assertIn("Loaded records: 1", result.output)
-            self.assertIn("Failed records: 1", result.output)
-            self.assertIn("Run job doctor for details.", result.output)
-            self.assertEqual(snapshot(jobs_dir), before)
-
 
 if __name__ == "__main__":
     unittest.main()

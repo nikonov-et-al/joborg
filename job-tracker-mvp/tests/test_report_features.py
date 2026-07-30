@@ -4,16 +4,16 @@ import io
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
-from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from pypdf import PdfReader
 
 from jobtracker.markdown import write_markdown_with_frontmatter
 from jobtracker.models import JobApplication
+from jobtracker.repositories import build_application_service
 from jobtracker.reports import build_report_data, report_data_to_markdown, render_report_pdf
 from jobtracker.services import ProjectContext
-from jobtracker.webapp import app
+from jobtracker.webapp import create_app
 
 
 def _context(root: Path) -> ProjectContext:
@@ -33,6 +33,8 @@ def _context(root: Path) -> ProjectContext:
         jobs_dir=root / "jobs",
         reports_dir=root / "reports",
         profile_dir=root / "profile",
+        database=root / "jobtracker.sqlite3",
+        files_dir=root / "files",
     )
 
 
@@ -122,10 +124,8 @@ class ReportFeatureTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             context = _context(root)
-            job_dir = context.jobs_dir / "2026-06-25_example_backend-engineer"
-            job_dir.mkdir(parents=True)
-            write_markdown_with_frontmatter(
-                job_dir / "job.md",
+            service = build_application_service(context)
+            service.create_job(
                 JobApplication(
                     company="Example Corp",
                     role="Backend Engineer",
@@ -133,14 +133,12 @@ class ReportFeatureTests(unittest.TestCase):
                     application_method="Company site",
                     status="applied",
                     date_applied="2026-06-25",
-                ).to_metadata(),
-                "Body",
+                ),
+                "Description",
             )
-
-            with patch("jobtracker.webapp.load_project_context", return_value=context):
-                client = TestClient(app)
-                report = client.post("/api/report?month=2026-06")
-                pdf = client.get("/api/report/pdf?month=2026-06")
+            client = TestClient(create_app(service))
+            report = client.post("/api/report?month=2026-06")
+            pdf = client.get("/api/report/pdf?month=2026-06")
 
             self.assertEqual(report.status_code, 200)
             payload = report.json()
@@ -159,19 +157,28 @@ class ReportFeatureTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             context = _context(root)
-            self._write_job(context.jobs_dir, "2025-06-01", "Alpha")
-            self._write_job(context.jobs_dir, "2026-06-25", "Beta")
-            self._write_job(context.jobs_dir, "2026-07-03", "Gamma")
-
-            with patch("jobtracker.webapp.load_project_context", return_value=context):
-                client = TestClient(app)
-                all_jobs = client.post("/api/report")
-                june = client.post("/api/report?month_number=06")
-                year = client.post("/api/report?year=2026")
-                june_2026 = client.post("/api/report?year=2026&month_number=06")
-                legacy = client.post("/api/report?month=2026-06")
-                pdf = client.get("/api/report/pdf?month_number=06")
-                invalid = client.post("/api/report?month_number=13")
+            service = build_application_service(context)
+            for date_applied, company in (
+                ("2025-06-01", "Alpha"),
+                ("2026-06-25", "Beta"),
+                ("2026-07-03", "Gamma"),
+            ):
+                service.create_job(
+                    JobApplication(
+                        company=company,
+                        role="Role",
+                        date_applied=date_applied,
+                    ),
+                    "Description",
+                )
+            client = TestClient(create_app(service))
+            all_jobs = client.post("/api/report")
+            june = client.post("/api/report?month_number=06")
+            year = client.post("/api/report?year=2026")
+            june_2026 = client.post("/api/report?year=2026&month_number=06")
+            legacy = client.post("/api/report?month=2026-06")
+            pdf = client.get("/api/report/pdf?month_number=06")
+            invalid = client.post("/api/report?month_number=13")
 
             self.assertEqual(all_jobs.json()["data"]["total"], 3)
             self.assertEqual(all_jobs.json()["artifact_id"], "all")
