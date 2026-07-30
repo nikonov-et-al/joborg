@@ -33,6 +33,7 @@ REQUIRED_TABLES = {
     "document_versions",
     "ai_runs",
     "migration_sources",
+    "schema_migrations",
 }
 
 

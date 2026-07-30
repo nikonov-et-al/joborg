@@ -12,7 +12,7 @@ const MONTHS = [
 ];
 const state = {
   jobs: [], loadErrors: [], detail: null, newFiles: [], profile: null, report: null,
-  workspaces: null, workspaceFolder: "", notice: "",
+  workspaces: null, storage: null, workspaceFolder: "", notice: "",
 };
 const app = document.querySelector("#app");
 const apiStatus = document.querySelector("#apiStatus");
@@ -24,6 +24,7 @@ const esc = (value = "") => String(value)
 const label = (value = "") => String(value).replaceAll("_", " ").replace(/\b\w/g, c => c.toUpperCase());
 const list = value => Array.isArray(value) ? value : [];
 const csvList = value => String(value || "").split(",").map(item => item.trim()).filter(Boolean);
+const ageDays = value => Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 86400000));
 
 function displayDate(value = "") {
   const text = String(value);
@@ -351,28 +352,36 @@ const desktopApi = () => window.pywebview?.api;
 
 async function desktopCall(method, ...args) {
   const api = desktopApi();
-  if (!api || typeof api[method] !== "function") throw new Error("Workspace management requires desktop app");
+  if (!api) throw new Error("Workspace management requires the desktop application");
+  if (typeof api[method] !== "function") throw new Error("Desktop integration unavailable. Restart Job Tracker.");
   return api[method](...args);
 }
 
 const workspaceRecord = item => typeof item === "string" ? { path: item } : (item || {});
 
 function workspaceListHtml(data) {
-  const active = String(data?.active || "");
+  const activeId = String(data?.active_id || "");
   const records = list(data?.workspaces).map(workspaceRecord);
   if (!records.length) return '<p class="empty">No remembered workspaces.</p>';
   return `<div class="workspace-list">${records.map(record => {
     const path = String(record.path || "");
-    const isActive = path === active;
+    const id = String(record.id || "");
+    const name = String(record.name || id || "Unnamed workspace");
+    const isActive = id === activeId;
     const available = record.available !== false;
     return `<article class="workspace-row">
-      <div><strong>${esc(record.applicant_name || record.name || "Unnamed profile")}</strong>
+      <div><strong>${esc(name)}</strong>
+        <span>${esc(record.applicant_name || "Unnamed profile")}</span>
         <span class="workspace-path">${esc(path)}</span>
         <small>${isActive ? "Active" : available ? "Available" : "Unavailable"}</small>
       </div>
       <div class="actions">
-        <button type="button" class="secondary" data-activate-workspace="${esc(path)}" ${isActive || !available ? "disabled" : ""}>Switch</button>
-        <button type="button" class="text-button" data-forget-workspace="${esc(path)}" ${isActive ? "disabled" : ""}>Forget</button>
+        <form class="inline-form" data-rename-workspace="${esc(id)}">
+          <label>Workspace name<input name="workspace_name" value="${esc(record.name || "")}" placeholder="Folder name when blank"></label>
+          <button type="submit" class="secondary">Rename</button>
+        </form>
+        <button type="button" class="secondary" data-activate-workspace="${esc(id)}" ${isActive || !available ? "disabled" : ""}>Switch</button>
+        <button type="button" class="text-button" data-forget-workspace="${esc(id)}" ${isActive ? "disabled" : ""}>Forget</button>
       </div>
     </article>`;
   }).join("")}</div>`;
@@ -381,25 +390,48 @@ function workspaceListHtml(data) {
 async function renderSettings() {
   if (!desktopApi()) {
     app.innerHTML = `${pageHead("Settings", "Workspace and storage location.")}
-      <section class="card"><p>Workspace management requires desktop app</p></section>`;
+      <section class="card"><p>Workspace management requires the desktop application</p></section>`;
     return;
   }
-  state.workspaces = await desktopCall("get_workspaces");
+  [state.workspaces, state.storage] = await Promise.all([
+    desktopCall("get_workspaces"),
+    desktopCall("get_storage_status"),
+  ]);
   const active = state.workspaces?.active || "";
+  const activeId = String(state.workspaces?.active_id || "");
+  const activeRecord = list(state.workspaces?.workspaces).map(workspaceRecord).find(record => String(record.id || "") === activeId);
+  const dataFolder = state.workspaces?.data_folder || "";
   app.innerHTML = `
     ${pageHead("Settings", "Workspace and storage location.")}
+    <section class="card">
+      <h2>Job Tracker data folder</h2>
+      <p>Databases, uploaded files, profiles, and reports for all workspaces are stored below this folder.</p>
+      <p class="workspace-path">${esc(dataFolder || "Direct workspace override")}</p>
+    </section>
+    <section class="card">
+      <div class="section-head">
+        <div><h2>Backup and export</h2>
+          <p>Schema version ${esc(state.storage?.schema_version || "")}. Migration backups are retained separately from user exports.</p>
+          <p class="workspace-path">${esc(state.storage?.backup_location || "")}</p>
+        </div>
+        <button type="button" class="secondary" data-export-workspace>Create verified export</button>
+      </div>
+      <p>${esc(state.storage?.recovery || "")}</p>
+      <ul class="file-links">${list(state.storage?.migration_backups).map(backup =>
+        `<li>Schema ${esc(backup.source_schema_version)} → ${esc(backup.target_schema_version)}
+          · ${esc(backup.created_at)} (${esc(ageDays(backup.created_at))} days old)
+          · ${esc(backup.size)} bytes
+          · ${backup.verified ? "verified" : "unverified"}</li>`).join("") || "<li>No migration backup has been needed.</li>"}</ul>
+    </section>
     <section class="card form">
-      <div class="section-head"><div><h2>Current workspace</h2><p class="workspace-path">${esc(active || "None")}</p></div>
-        <button type="button" class="secondary" data-open-workspace>Open existing workspace</button>
+      <div class="section-head"><div><h2>Current workspace</h2><strong>${esc(activeRecord?.name || "None")}</strong><p class="workspace-path">${esc(active || "None")}</p></div>
+        <button type="button" class="secondary" data-import-workspace ${dataFolder ? "" : "disabled"}>Import existing workspace</button>
       </div>
       ${workspaceListHtml(state.workspaces)}
     </section>
     <form id="createWorkspaceForm" class="card form">
-      <div><h2>Create workspace</h2><p class="muted">Choose an empty local folder and create its applicant profile.</p></div>
-      <label>Data folder
-        <span class="folder-picker"><input id="workspaceFolder" value="${esc(state.workspaceFolder)}" readonly required>
-          <button type="button" class="secondary" data-choose-workspace-folder>Choose folder</button></span>
-      </label>
+      <div><h2>Create workspace</h2><p class="muted">A managed workspace folder will be created automatically below the Job Tracker data folder.</p></div>
+      <label>Workspace name (optional)<input name="workspace_name" placeholder="Folder name will be used when blank"></label>
       <div class="form-grid">
         <label>Given name<input name="given_name" required></label>
         <label>Family name<input name="family_name" required></label>
@@ -456,20 +488,18 @@ app.addEventListener("change", event => {
 });
 
 app.addEventListener("click", async event => {
-  if (event.target.closest("[data-choose-workspace-folder]")) {
+  if (event.target.closest("[data-export-workspace]")) {
     try {
-      const path = await desktopCall("choose_workspace_folder");
-      if (path) {
-        state.workspaceFolder = String(path);
-        document.querySelector("#workspaceFolder").value = state.workspaceFolder;
-      }
+      const result = await desktopCall("create_workspace_export");
+      await renderSettings();
+      setStatus(`${result.message}: ${result.path}`, "ok");
     } catch (error) { setStatus(error.message, "bad"); }
     return;
   }
-  if (event.target.closest("[data-open-workspace]")) {
+  if (event.target.closest("[data-import-workspace]")) {
     try {
       const path = await desktopCall("choose_workspace_folder");
-      if (path) await desktopCall("open_workspace", String(path));
+      if (path) await desktopCall("import_workspace", String(path));
     } catch (error) { setStatus(error.message, "bad"); }
     return;
   }
@@ -634,9 +664,22 @@ app.addEventListener("submit", async event => {
   }
   if (event.target.id === "createWorkspaceForm") {
     const raw = new FormData(event.target);
+    const workspaceName = String(raw.get("workspace_name") || "");
     const profile = Object.fromEntries(["given_name", "family_name", "email", "phone", "city", "linkedin", "github", "website"].map(key => [key, raw.get(key) || ""]));
     try {
-      await desktopCall("create_workspace", state.workspaceFolder, profile);
+      await desktopCall("create_workspace", profile, workspaceName);
+    } catch (error) { setStatus(error.message, "bad"); }
+  }
+  if (event.target.matches("[data-rename-workspace]")) {
+    const raw = new FormData(event.target);
+    try {
+      await desktopCall(
+        "rename_workspace",
+        event.target.dataset.renameWorkspace,
+        String(raw.get("workspace_name") || ""),
+      );
+      await renderSettings();
+      setStatus("Workspace renamed", "ok");
     } catch (error) { setStatus(error.message, "bad"); }
   }
   if (event.target.id === "profileCvForm") {

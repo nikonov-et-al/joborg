@@ -1,0 +1,28 @@
+# Reviewed git-filter-repo removal rules for Milestone 6.
+# Run only in the disposable rewrite clone documented in docs/privacy.md.
+literal:job-tracker-mvp/jobs
+literal:job-tracker-mvp/profile
+literal:job-tracker-mvp/reports
+literal:job-tracker-mvp/input
+literal:job-tracker-mvp/files
+literal:job-tracker-mvp/backups
+literal:job-tracker-mvp/logs
+literal:job-tracker-mvp/tmp
+literal:job-tracker-mvp/config.yml
+glob:**/__pycache__/**
+glob:**/*.pyc
+glob:**/*.pyo
+glob:**/*.egg-info/**
+glob:**/*.sqlite
+glob:**/*.sqlite3
+glob:**/*.db
+glob:**/*.db-journal
+glob:**/*.db-shm
+glob:**/*.db-wal
+glob:**/*.bak
+glob:**/*.backup
+glob:**/*.log
+glob:**/*.rar
+glob:**/*.7z
+glob:**/*.zip
+glob:**/*.pdf

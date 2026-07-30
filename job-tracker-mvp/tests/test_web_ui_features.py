@@ -101,14 +101,18 @@ class WebUiFeatureTests(unittest.TestCase):
     def test_settings_uses_desktop_bridge_and_does_not_require_job_loading(self) -> None:
         self.assertIn('data-route="settings"', self.index_html)
         self.assertIn("window.pywebview?.api", self.app_js)
-        self.assertIn("Workspace management requires desktop app", self.app_js)
+        self.assertIn("Workspace management requires the desktop application", self.app_js)
+        self.assertIn("Desktop integration unavailable. Restart Job Tracker.", self.app_js)
         for method in (
             "get_workspaces",
             "choose_workspace_folder",
             "create_workspace",
-            "open_workspace",
+            "import_workspace",
             "activate_workspace",
             "forget_workspace",
+            "rename_workspace",
+            "get_storage_status",
+            "create_workspace_export",
         ):
             self.assertIn(f'"{method}"', self.app_js)
         navigation = self.app_js.split("async function navigate()", 1)[1].split(
@@ -117,7 +121,28 @@ class WebUiFeatureTests(unittest.TestCase):
         self.assertIn('const jobRoutes = new Set(["home", "new-job", "jobs", "report"])', navigation)
         self.assertIn("if (jobRoutes.has(route) && !state.jobs.length) await loadJobs()", navigation)
         self.assertNotIn('request("/workspaces', self.app_js)
+        self.assertIn("Job Tracker data folder", self.app_js)
+        self.assertIn("stored below this folder", self.app_js)
+        self.assertIn("active_id", self.app_js)
+        self.assertIn("Create verified export", self.app_js)
+        self.assertIn("Migration backups are retained separately", self.app_js)
+        self.assertIn("state.storage?.recovery", self.app_js)
         self.assertIn(".workspace-row", self.styles)
+
+    def test_settings_supports_workspace_display_names_and_renaming(self) -> None:
+        settings = self.app_js.split("function workspaceListHtml(data)", 1)[1].split(
+            "async function navigate()", 1
+        )[0]
+        submit = self.app_js.split('if (event.target.id === "createWorkspaceForm")', 1)[1]
+        self.assertIn("<strong>${esc(name)}</strong>", settings)
+        self.assertIn('record.applicant_name || "Unnamed profile"', settings)
+        self.assertIn('name="workspace_name"', settings)
+        self.assertIn("Workspace name (optional)", settings)
+        self.assertIn('data-rename-workspace="${esc(id)}"', settings)
+        self.assertIn('"create_workspace", profile, workspaceName', submit)
+        self.assertIn('"rename_workspace"', submit)
+        self.assertIn("event.target.dataset.renameWorkspace", submit)
+        self.assertIn("await renderSettings()", submit)
 
 
 class AddJobApiRegressionTests(unittest.TestCase):

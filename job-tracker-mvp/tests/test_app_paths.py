@@ -10,12 +10,22 @@ import jobtracker
 from jobtracker.config import load_config
 from jobtracker.paths import (
     AppPaths,
+    WorkspaceCatalog,
+    WorkspaceCatalogError,
+    WorkspaceRecord,
     WorkspaceRegistry,
     WorkspaceRegistryError,
+    WorkspaceSettings,
     load_workspace_registry,
+    load_workspace_catalog,
+    load_workspace_settings,
     resolve_desktop_workspace,
+    save_workspace_catalog,
     save_workspace_registry,
+    save_workspace_settings,
     validate_workspace_folder,
+    validate_workspaces_root,
+    workspace_path,
 )
 
 try:
@@ -70,14 +80,14 @@ class AppPathsTests(unittest.TestCase):
             self.assertEqual(paths.data_dir, (root / "data").resolve())
             self.assertEqual(paths.legacy_jobs_dir, (root / "legacy").resolve())
 
-    def test_ensure_runtime_dirs_never_creates_legacy_directory(self) -> None:
+    def test_runtime_initialization_does_not_create_empty_legacy_directories(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
             paths = AppPaths.resolve(root / "data", root / "missing-legacy")
             paths.ensure_runtime_dirs()
 
+            self.assertTrue(paths.data_dir.is_dir())
             for directory in (
-                paths.data_dir,
                 paths.files_dir,
                 paths.backups_dir,
                 paths.logs_dir,
@@ -86,7 +96,7 @@ class AppPathsTests(unittest.TestCase):
                 paths.reports_dir,
                 paths.profile_dir,
             ):
-                self.assertTrue(directory.is_dir())
+                self.assertFalse(directory.exists())
             self.assertFalse(paths.database.exists())
             self.assertFalse(paths.legacy_jobs_dir.exists())
 
@@ -174,18 +184,30 @@ class WorkspaceRegistryTests(unittest.TestCase):
                 ("environment", (root / "environment").resolve()),
             )
 
-    def test_resolution_uses_active_workspace(self) -> None:
+    def test_resolution_uses_managed_active_workspace(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            workspace = root / "workspace"
-            workspace.mkdir()
+            data_root = root / "data"
+            workspace = data_root / "workspaces" / "person--12345678"
+            workspace.mkdir(parents=True)
             (workspace / "jobtracker.sqlite3").touch()
-            registry = WorkspaceRegistry(active=workspace, workspaces=(workspace,))
-            registry_path = root / "state" / "workspaces.yml"
-            save_workspace_registry(registry, registry_path)
+            record = WorkspaceRecord(
+                "12345678123456781234567812345678",
+                "Person",
+                Path("workspaces/person--12345678"),
+            )
+            save_workspace_catalog(
+                data_root,
+                WorkspaceCatalog(active_id=record.id, workspaces=(record,)),
+            )
+            settings_path = root / "state" / "settings.yml"
+            save_workspace_settings(
+                WorkspaceSettings(workspaces_root=data_root),
+                settings_path,
+            )
 
             with (
-                patch("jobtracker.paths.workspace_registry_file", return_value=registry_path),
+                patch("jobtracker.paths.workspace_settings_file", return_value=settings_path),
                 patch.dict(os.environ, {}, clear=False),
             ):
                 os.environ.pop("JOBTRACKER_DATA_DIR", None)
@@ -194,26 +216,35 @@ class WorkspaceRegistryTests(unittest.TestCase):
             self.assertEqual(resolution.status, "active")
             self.assertEqual(resolution.data_dir, workspace.resolve())
 
-    def test_missing_active_workspace_requires_recovery_without_fallback(self) -> None:
+    def test_missing_managed_active_workspace_requires_recovery_without_fallback(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            default = root / "default"
-            default.mkdir()
-            (default / "jobtracker.sqlite3").touch()
-            missing = root / "missing"
-            registry_path = root / "state" / "workspaces.yml"
-            save_workspace_registry(WorkspaceRegistry(active=missing), registry_path)
+            data_root = root / "data"
+            data_root.mkdir()
+            record = WorkspaceRecord(
+                "12345678123456781234567812345678",
+                "Missing",
+                Path("workspaces/missing--12345678"),
+            )
+            save_workspace_catalog(
+                data_root,
+                WorkspaceCatalog(active_id=record.id, workspaces=(record,)),
+            )
+            settings_path = root / "state" / "settings.yml"
+            save_workspace_settings(
+                WorkspaceSettings(workspaces_root=data_root),
+                settings_path,
+            )
 
             with (
-                patch("jobtracker.paths.workspace_registry_file", return_value=registry_path),
-                patch("jobtracker.paths.default_data_dir", return_value=default),
+                patch("jobtracker.paths.workspace_settings_file", return_value=settings_path),
                 patch.dict(os.environ, {}, clear=False),
             ):
                 os.environ.pop("JOBTRACKER_DATA_DIR", None)
                 resolution = resolve_desktop_workspace()
 
             self.assertEqual(resolution.status, "recovery")
-            self.assertEqual(resolution.data_dir, missing.resolve())
+            self.assertEqual(resolution.data_dir, (data_root / record.folder).resolve())
 
     def test_corrupt_registry_requires_recovery(self) -> None:
         with TemporaryDirectory() as temp:
@@ -231,7 +262,7 @@ class WorkspaceRegistryTests(unittest.TestCase):
             self.assertEqual(resolution.status, "recovery")
             self.assertIsNone(resolution.data_dir)
 
-    def test_resolution_adopts_existing_default_or_requests_setup(self) -> None:
+    def test_resolution_requests_setup_or_legacy_migration(self) -> None:
         with TemporaryDirectory() as temp:
             default = Path(temp) / "default"
             default.mkdir()
@@ -247,8 +278,35 @@ class WorkspaceRegistryTests(unittest.TestCase):
                 adopted = resolve_desktop_workspace()
 
             self.assertEqual(setup.status, "setup")
-            self.assertEqual(adopted.status, "adopt_default")
-            self.assertEqual(adopted.registry.active, default.resolve())
+            self.assertEqual(adopted.status, "migrate")
+            self.assertEqual(adopted.legacy_source, default.resolve())
+
+    def test_missing_legacy_active_workspace_requires_recovery(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            missing = root / "missing"
+            registry_path = root / "state" / "workspaces.yml"
+            save_workspace_registry(
+                WorkspaceRegistry(active=missing, workspaces=(missing,)),
+                registry_path,
+            )
+            settings_path = root / "state" / "settings.yml"
+            with (
+                patch(
+                    "jobtracker.paths.workspace_settings_file",
+                    return_value=settings_path,
+                ),
+                patch(
+                    "jobtracker.paths.workspace_registry_file",
+                    return_value=registry_path,
+                ),
+                patch.dict(os.environ, {}, clear=False),
+            ):
+                os.environ.pop("JOBTRACKER_DATA_DIR", None)
+                resolution = resolve_desktop_workspace()
+
+            self.assertEqual(resolution.status, "recovery")
+            self.assertIn("unavailable", resolution.error)
 
 
 class WorkspaceFolderValidationTests(unittest.TestCase):
@@ -288,6 +346,173 @@ class WorkspaceFolderValidationTests(unittest.TestCase):
             with patch.dict(os.environ, {"OneDrive": str(folder)}):
                 with self.assertRaisesRegex(ValueError, "OneDrive"):
                     validate_workspace_folder(folder, "new")
+
+    def test_managed_root_must_be_empty_or_have_a_valid_catalog(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            self.assertEqual(validate_workspaces_root(root, "new"), root.resolve())
+            (root / "unrelated.txt").touch()
+            with self.assertRaisesRegex(ValueError, "empty"):
+                validate_workspaces_root(root, "new")
+            (root / "unrelated.txt").unlink()
+            save_workspace_catalog(root, WorkspaceCatalog())
+            self.assertEqual(validate_workspaces_root(root, "existing"), root.resolve())
+
+
+class ManagedWorkspaceCatalogTests(unittest.TestCase):
+    def test_settings_and_relative_catalog_round_trip(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            data_root = root / "data"
+            data_root.mkdir()
+            settings_path = root / "state" / "settings.yml"
+            record = WorkspaceRecord(
+                "12345678-1234-5678-1234-567812345678",
+                "Jane Example",
+                Path("workspaces/jane-example--12345678"),
+            )
+
+            settings = save_workspace_settings(
+                WorkspaceSettings(workspaces_root=data_root),
+                settings_path,
+            )
+            catalog = save_workspace_catalog(
+                data_root,
+                WorkspaceCatalog(active_id=record.id, workspaces=(record,)),
+            )
+
+            self.assertEqual(load_workspace_settings(settings_path), settings)
+            self.assertEqual(load_workspace_catalog(data_root), catalog)
+            self.assertEqual(
+                workspace_path(data_root, catalog.workspaces[0]),
+                (data_root / record.folder).resolve(),
+            )
+            text = (data_root / "workspaces.yml").read_text(encoding="utf-8")
+            self.assertIn("version: 2", text)
+            self.assertNotIn(str(data_root), text)
+
+    def test_managed_version_one_catalog_loads_as_version_two(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "workspaces.yml").write_text(
+                """
+version: 1
+active_workspace: "12345678123456781234567812345678"
+workspaces:
+- id: "12345678123456781234567812345678"
+  name: Main search
+  folder: workspaces/jane-example--12345678
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            catalog = load_workspace_catalog(root)
+
+            assert catalog is not None
+            self.assertEqual(catalog.version, 2)
+            self.assertEqual(catalog.workspaces[0].name, "Main search")
+
+    def test_legacy_version_one_registry_is_not_a_managed_catalog(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "workspaces.yml").write_text(
+                """
+version: 1
+active: C:\\legacy
+workspaces:
+- C:\\legacy
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(WorkspaceCatalogError, "Legacy"):
+                load_workspace_catalog(root)
+
+    def test_default_managed_catalog_without_locator_is_recovered_as_active(self) -> None:
+        with TemporaryDirectory() as temp:
+            default_root = Path(temp) / "jobtracker"
+            workspace = default_root / "workspaces" / "person--12345678"
+            workspace.mkdir(parents=True)
+            (workspace / "jobtracker.sqlite3").touch()
+            record = WorkspaceRecord(
+                "12345678123456781234567812345678",
+                "Main search",
+                workspace.relative_to(default_root),
+            )
+            save_workspace_catalog(
+                default_root,
+                WorkspaceCatalog(active_id=record.id, workspaces=(record,)),
+            )
+            settings_path = Path(temp) / "state" / "settings.yml"
+
+            with (
+                patch(
+                    "jobtracker.paths.workspace_settings_file",
+                    return_value=settings_path,
+                ),
+                patch(
+                    "jobtracker.paths.default_data_dir",
+                    return_value=default_root,
+                ),
+                patch.dict(os.environ, {}, clear=False),
+            ):
+                os.environ.pop("JOBTRACKER_DATA_DIR", None)
+                resolution = resolve_desktop_workspace()
+
+            self.assertEqual(resolution.status, "active")
+            self.assertEqual(resolution.data_dir, workspace.resolve())
+            self.assertIsNone(resolution.settings)
+
+    def test_catalog_rejects_escaping_absolute_and_duplicate_folders(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            first = WorkspaceRecord(
+                "12345678123456781234567812345678",
+                "First",
+                Path("../escape"),
+            )
+            with self.assertRaisesRegex(WorkspaceCatalogError, "workspaces"):
+                save_workspace_catalog(root, WorkspaceCatalog(workspaces=(first,)))
+
+            duplicate = WorkspaceRecord(
+                "87654321876543218765432187654321",
+                "Second",
+                Path("workspaces/shared"),
+            )
+            valid = WorkspaceRecord(
+                "12345678123456781234567812345678",
+                "First",
+                Path("workspaces/shared"),
+            )
+            with self.assertRaisesRegex(WorkspaceCatalogError, "folders"):
+                save_workspace_catalog(
+                    root,
+                    WorkspaceCatalog(workspaces=(valid, duplicate)),
+                )
+
+    def test_catalog_atomic_replace_failure_preserves_existing_file(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            catalog_path = root / "workspaces.yml"
+            save_workspace_catalog(root, WorkspaceCatalog())
+            before = catalog_path.read_bytes()
+            record = WorkspaceRecord(
+                "12345678123456781234567812345678",
+                "Person",
+                Path("workspaces/person--12345678"),
+            )
+
+            with (
+                patch("jobtracker.paths.os.replace", side_effect=OSError("injected")),
+                self.assertRaisesRegex(OSError, "injected"),
+            ):
+                save_workspace_catalog(
+                    root,
+                    WorkspaceCatalog(active_id=record.id, workspaces=(record,)),
+                )
+
+            self.assertEqual(catalog_path.read_bytes(), before)
+            self.assertEqual(list(root.glob("*.tmp")), [])
 
 
 if __name__ == "__main__":
