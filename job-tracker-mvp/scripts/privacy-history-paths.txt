@@ -1,5 +1,7 @@
 # Reviewed git-filter-repo removal rules for Milestone 6.
 # Run only in the disposable rewrite clone documented in docs/privacy.md.
+literal:AGENTS.md
+literal:PLAN.md
 literal:job-tracker-mvp/jobs
 literal:job-tracker-mvp/profile
 literal:job-tracker-mvp/reports

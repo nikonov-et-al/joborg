@@ -11,8 +11,8 @@ and update without scanning obsolete plans or reverse-engineering the source.
 
 ## Read order
 
-1. [`../PLAN.md`](../PLAN.md) - unfinished milestones, acceptance criteria, and
-   the current next step.
+1. Active agent instructions and development plans are local and intentionally
+   not tracked.
 2. [`privacy.md`](privacy.md) - repository data boundary, safe exposure
    inventory, and history-remediation state.
 3. `architecture/` - current system boundaries, data flow, persistence, and
@@ -72,9 +72,9 @@ The names above are routing guidance, not a requirement to create every file.
 
 ## Document lifecycle
 
-- Active plans stay in the repository root `PLAN.md`.
+- Active agent instructions and plans remain local and untracked.
 - Completed milestone detail moves to `docs/history/`.
 - Current architecture docs describe what the accepted code does now.
-- Proposed architecture belongs in `PLAN.md` or an ADR marked `proposed`.
+- Proposed architecture belongs in a local plan or an ADR marked `proposed`.
 - Superseded docs receive a banner linking to their replacement; they are not
   deleted when they provide useful decision or verification history.

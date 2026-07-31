@@ -23,6 +23,8 @@ class RepositoryPrivacyTests(unittest.TestCase):
         self.assertTrue(privacy.path_violation("nested/.cache/state.json"))
         self.assertTrue(privacy.path_violation("job-tracker-mvp/report.md"))
         self.assertTrue(privacy.path_violation("report.md"))
+        self.assertTrue(privacy.path_violation("AGENTS.md"))
+        self.assertTrue(privacy.path_violation("PLAN.md"))
         self.assertFalse(privacy.path_violation(".github/workflows/test.yml"))
         self.assertTrue(privacy.path_violation("resume.pdf"))
         self.assertTrue(privacy.path_violation("resume.docx"))

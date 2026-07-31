@@ -3,6 +3,10 @@
 !/.github/
 !/.github/**
 
+# Local agent instructions and active planning
+/AGENTS.md
+/PLAN.md
+
 # Job Tracker runtime data
 /job-tracker-mvp/jobs/
 /job-tracker-mvp/profile/

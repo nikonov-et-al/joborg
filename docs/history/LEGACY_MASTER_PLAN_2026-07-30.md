@@ -2,7 +2,7 @@
 
 Status: superseded on 2026-07-30
 
-Current plan: [`../../PLAN.md`](../../PLAN.md)
+Current planning is maintained locally and is not part of repository history.
 
 This file preserves the original master plan and completion evidence through
 Milestone 5. It may contain superseded next steps and is not an active work

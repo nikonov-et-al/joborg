@@ -12,8 +12,8 @@ without mixing them into current instructions.
 ## Important
 
 Files in this directory may describe old paths, completed risks, superseded
-designs, or commands that should not be run against current data. Use the root
-[`PLAN.md`](../../PLAN.md) for active work.
+designs, or commands that should not be run against current data. Active
+development planning is maintained locally and intentionally not tracked.
 
 ## Archived plans
 

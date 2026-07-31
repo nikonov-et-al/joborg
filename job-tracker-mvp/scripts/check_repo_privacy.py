@@ -19,7 +19,9 @@ GENERATED_COMPONENTS = frozenset(
     {"__pycache__", ".pytest_cache", "build", "dist"}
 )
 FORBIDDEN_NAMES = frozenset({"config.yml"})
-FORBIDDEN_PATHS = frozenset({"job-tracker-mvp/report.md", "report.md"})
+FORBIDDEN_PATHS = frozenset(
+    {"agents.md", "job-tracker-mvp/report.md", "plan.md", "report.md"}
+)
 ALLOWED_HIDDEN_COMPONENTS = frozenset({".github"})
 FORBIDDEN_SUFFIXES = (
     ".sqlite",
