@@ -15,6 +15,7 @@ The project stores data locally in SQLite and managed files. It includes a CLI, 
 - Markdown reports with optional DOCX/PDF export
 - Optional OpenAI-compatible local LLM integration
 - Recovery exports, migration backups, privacy checks, and release smoke tests
+- Windows desktop application with a packaged `JobTracker.exe` executable
 
 ## Project layout
 
@@ -50,6 +51,27 @@ Run the desktop application and build dependencies:
 pip install -e ".[desktop,build]"
 jobtracker-desktop
 ```
+
+For Windows users, the packaged desktop application is available as
+`job-tracker-mvp/dist/JobTracker.exe` when a Windows build has been produced.
+The executable runs without a separate Python installation or project virtual
+environment. Builds are platform-specific and should be created separately
+for each target operating system.
+
+## Technology stack
+
+- Python 3.10+
+- SQLite with transactional, versioned schema management
+- FastAPI and Uvicorn for the authenticated loopback web API
+- Pydantic for transport-boundary validation
+- Typer, Prompt Toolkit, and Rich for the CLI
+- Plain HTML, CSS, and JavaScript for the web UI
+- pywebview for the optional Windows desktop wrapper
+- ReportLab and Pandoc integration for document/PDF reports
+- PyInstaller for Windows executable packaging
+- PyYAML for configuration
+- pytest and Node.js checks for testing
+- Optional OpenAI-compatible local LLM providers, including Ollama and LM Studio
 
 ## Common commands
 
@@ -106,4 +128,6 @@ The test suite redirects application-data access to pytest-owned temporary stora
 
 ## License
 
-No public license has been declared yet. Treat this repository as all-rights-reserved unless a license is added.
+This project is licensed under the [MIT License](LICENSE). You may use,
+modify, distribute, and sell the software, including in commercial products,
+provided that the original copyright and license notice remain included.
