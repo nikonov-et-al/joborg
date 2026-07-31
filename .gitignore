@@ -9,6 +9,17 @@
 /job-tracker-mvp/tmp/
 /job-tracker-mvp/config.yml
 
+# Root-level runtime/generated output
+/jobs/
+/profile/
+/reports/
+/input/
+/files/
+/backups/
+/logs/
+/tmp/
+/config.yml
+
 # Local data, backups, logs, and archives
 *.sqlite
 *.sqlite3
@@ -23,6 +34,8 @@
 *.7z
 *.zip
 *.pdf
+*.doc
+*.docx
 
 # Explicit synthetic fixtures may use otherwise forbidden formats
 !job-tracker-mvp/tests/fixtures/
