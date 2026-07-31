@@ -1,12 +1,110 @@
 from __future__ import annotations
 
 import json
+import ipaddress
+import os
 import re
 from typing import Any
+from urllib.parse import urlsplit
 
 from rich.console import Console
 
 console = Console()
+
+
+class LLMError(RuntimeError):
+    """Stable LLM failure suitable for UI and CLI handling."""
+
+    def __init__(self, code: str, message: str) -> None:
+        self.code = code
+        super().__init__(message)
+
+
+_LOOPBACK = "loopback"
+_REMOTE = "remote"
+
+
+def classify_llm_endpoint(base_url: str) -> str:
+    """Return ``loopback`` or ``remote`` after validating an HTTP(S) endpoint."""
+    if not isinstance(base_url, str) or not base_url.strip():
+        raise LLMError("llm_endpoint_invalid", "LLM endpoint must be a valid HTTP(S) URL.")
+    try:
+        parsed = urlsplit(base_url)
+        host = parsed.hostname
+        port = parsed.port  # Validate malformed ports.
+    except ValueError as exc:
+        raise LLMError("llm_endpoint_invalid", "LLM endpoint must be a valid HTTP(S) URL.") from exc
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+        or not host
+        or parsed.query
+        or parsed.fragment
+        or port is not None and not 0 < port <= 65535
+    ):
+        raise LLMError("llm_endpoint_invalid", "LLM endpoint must be a valid HTTP(S) URL.")
+    if host.lower() == "localhost":
+        return _LOOPBACK
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        if not _is_valid_hostname(host):
+            raise LLMError("llm_endpoint_invalid", "LLM endpoint must use a valid host.")
+        return _REMOTE
+    return _LOOPBACK if address.is_loopback else _REMOTE
+
+
+def _is_valid_hostname(host: str) -> bool:
+    if host.endswith("."):
+        host = host[:-1]
+    if not host or len(host) > 253:
+        return False
+    return all(
+        0 < len(label) <= 63
+        and label[0] != "-"
+        and label[-1] != "-"
+        and all(char.isascii() and (char.isalnum() or char == "-") for char in label)
+        for label in host.split(".")
+    )
+
+
+def llm_endpoint_policy(
+    config: dict[str, Any], *, remote_confirmation: bool = False, sends_personal_content: bool = False
+) -> tuple[str, str]:
+    """Validate endpoint gates and return ``(base_url, api_key)`` for OpenAI."""
+    llm_config = config.get("llm", {})
+    base_url = llm_config.get("base_url", "http://localhost:11434/v1")
+    endpoint_kind = classify_llm_endpoint(base_url)
+    if endpoint_kind == _LOOPBACK:
+        return base_url, os.environ.get("JOBTRACKER_LLM_API_KEY") or "local-not-needed"
+    if urlsplit(base_url).scheme != "https":
+        raise LLMError("llm_remote_https_required", "Remote LLM endpoints must use HTTPS.")
+    if llm_config.get("remote_disclosure_consent", False) is not True:
+        raise LLMError("llm_remote_consent_required", "Remote LLM disclosure consent is required.")
+    if sends_personal_content and not remote_confirmation:
+        raise LLMError("llm_remote_confirmation_required", "Confirm remote disclosure before sending personal content.")
+    api_key = os.environ.get("JOBTRACKER_LLM_API_KEY")
+    if not api_key:
+        raise LLMError("llm_remote_credential_missing", "JOBTRACKER_LLM_API_KEY is required for remote LLM endpoints.")
+    return base_url, api_key
+
+
+def _openai_client(config: dict[str, Any], *, remote_confirmation: bool = False, sends_personal_content: bool = False) -> Any:
+    base_url, api_key = llm_endpoint_policy(
+        config,
+        remote_confirmation=remote_confirmation,
+        sends_personal_content=sends_personal_content,
+    )
+    try:
+        from openai import OpenAI
+    except ImportError as exc:
+        raise LLMError("llm_unavailable", "LLM provider is unavailable.") from exc
+    try:
+        return OpenAI(base_url=base_url, api_key=api_key)
+    except Exception as exc:
+        raise LLMError("llm_unavailable", "LLM provider is unavailable.") from exc
 
 
 JOB_EXTRACTION_SYSTEM_PROMPT = """
@@ -136,7 +234,12 @@ def normalize_extraction(data: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def extract_job_data_with_llm(job_description: str, config: dict[str, Any]) -> dict[str, Any]:
+def extract_job_data_with_llm(
+    job_description: str,
+    config: dict[str, Any],
+    *,
+    remote_confirmation: bool = False,
+) -> dict[str, Any]:
     """
     Calls a local OpenAI-compatible LLM endpoint.
 
@@ -145,17 +248,10 @@ def extract_job_data_with_llm(job_description: str, config: dict[str, Any]) -> d
     - LM Studio local server
     - llama.cpp OpenAI-compatible server
     """
-    try:
-        from openai import OpenAI
-    except ImportError as exc:
-        raise RuntimeError("The 'openai' Python package is not installed.") from exc
-
-    llm_config = config["llm"]
-
-    client = OpenAI(
-        base_url=llm_config.get("base_url", "http://localhost:11434/v1"),
-        api_key=llm_config.get("api_key", "local-not-needed"),
+    client = _openai_client(
+        config, remote_confirmation=remote_confirmation, sends_personal_content=True
     )
+    llm_config = config["llm"]
 
     user_prompt = f"""
 Extract the following fields from this job description.
@@ -167,14 +263,19 @@ Job description:
 {job_description}
 """.strip()
 
-    response = client.chat.completions.create(
-        model=llm_config["model"],
-        temperature=0.1,
-        messages=[
-            {"role": "system", "content": JOB_EXTRACTION_SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt},
-        ],
-    )
+    try:
+        response = client.chat.completions.create(
+            model=llm_config["model"],
+            temperature=0.1,
+            messages=[
+                {"role": "system", "content": JOB_EXTRACTION_SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
+        )
+    except LLMError:
+        raise
+    except Exception as exc:
+        raise LLMError("llm_unavailable", "LLM provider is unavailable.") from exc
 
     content = response.choices[0].message.content or ""
     data = _extract_json_object(content)
@@ -183,12 +284,7 @@ Job description:
 
 def test_llm(config: dict[str, Any]) -> tuple[bool, str]:
     try:
-        from openai import OpenAI
-
-        client = OpenAI(
-            base_url=config["llm"].get("base_url", "http://localhost:11434/v1"),
-            api_key=config["llm"].get("api_key", "local-not-needed"),
-        )
+        client = _openai_client(config)
 
         response = client.chat.completions.create(
             model=config["llm"]["model"],
@@ -207,10 +303,12 @@ def test_llm(config: dict[str, Any]) -> tuple[bool, str]:
         if data.get("status") == "ok":
             return True, "Local LLM responded with valid JSON."
 
-        return False, f"LLM responded, but not with expected JSON: {content}"
+        return False, "llm_unavailable: LLM response was invalid."
 
-    except Exception as exc:
-        return False, str(exc)
+    except LLMError as exc:
+        return False, f"{exc.code}: {exc}"
+    except Exception:
+        return False, "llm_unavailable: LLM provider is unavailable."
 
 
 def generate_cv_draft_with_llm(
@@ -219,26 +317,26 @@ def generate_cv_draft_with_llm(
     job_description: str,
     job: dict[str, Any],
     config: dict[str, Any],
+    remote_confirmation: bool = False,
 ) -> str:
-    try:
-        from openai import OpenAI
-    except ImportError as exc:
-        raise RuntimeError("The 'openai' Python package is not installed.") from exc
-
+    client = _openai_client(
+        config, remote_confirmation=remote_confirmation, sends_personal_content=True
+    )
     llm_config = config["llm"]
-    client = OpenAI(
-        base_url=llm_config.get("base_url", "http://localhost:11434/v1"),
-        api_key=llm_config.get("api_key", "local-not-needed"),
-    )
     prompt = build_cv_draft_prompt(profile=profile, job_description=job_description, job=job)
-    response = client.chat.completions.create(
-        model=llm_config["model"],
-        temperature=0.2,
-        messages=[
-            {"role": "system", "content": CV_DRAFT_SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
-        ],
-    )
+    try:
+        response = client.chat.completions.create(
+            model=llm_config["model"],
+            temperature=0.2,
+            messages=[
+                {"role": "system", "content": CV_DRAFT_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+        )
+    except LLMError:
+        raise
+    except Exception as exc:
+        raise LLMError("llm_unavailable", "LLM provider is unavailable.") from exc
     content = (response.choices[0].message.content or "").strip()
     content = re.sub(r"^```(?:markdown|md)?\s*", "", content, flags=re.IGNORECASE)
     content = re.sub(r"\s*```$", "", content)

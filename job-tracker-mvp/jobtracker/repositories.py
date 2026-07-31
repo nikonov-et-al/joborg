@@ -189,12 +189,14 @@ class LegacyDocumentGateway:
         profile: dict[str, Any],
         job_description: str,
         job: dict[str, Any],
+        remote_confirmation: bool = False,
     ) -> str:
         return self._generate(
             profile=profile,
             job_description=job_description,
             job=job,
             config=self.context.config,
+            remote_confirmation=remote_confirmation,
         )
 
     def render_cv_pdf(self, content: str, *, job_title: str) -> bytes:

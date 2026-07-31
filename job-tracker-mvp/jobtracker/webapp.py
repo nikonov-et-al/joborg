@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import logging
 import os
 import secrets
 import tempfile
@@ -16,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.status import HTTP_201_CREATED
 
 from .application import JobTrackerService, RecordNotFoundError
-from .llm import generate_cv_draft_with_llm
+from .llm import LLMError, classify_llm_endpoint
 from .pdf import render_cv_pdf
 from .reports import build_report_data, report_data_to_dict, render_report_pdf, write_report_data
 from .repositories import (
@@ -24,7 +25,13 @@ from .repositories import (
     LegacyReportGateway,
     build_application_service,
 )
-from .schemas import CvDraftSchema, JobCreateSchema, JobUpdateSchema, ProfileUpdateSchema
+from .schemas import (
+    CvDraftSchema,
+    CvGenerationSchema,
+    JobCreateSchema,
+    JobUpdateSchema,
+    ProfileUpdateSchema,
+)
 from .services import UploadedAsset, job_record_to_dict, load_project_context, write_project_report
 
 
@@ -35,6 +42,7 @@ MAX_REQUEST_UPLOAD_BYTES = 50 * 1024 * 1024
 MAX_UPLOAD_FILES = 100
 UPLOAD_CHUNK_BYTES = 64 * 1024
 TOKEN_HEADER = "X-Jobtracker-Token"
+logger = logging.getLogger("jobtracker.llm")
 
 
 def _build_application_service() -> JobTrackerService:
@@ -193,14 +201,22 @@ def root() -> FileResponse:
 def api_config(
     service: JobTrackerService = Depends(get_application_service),
 ) -> dict[str, Any]:
-    context = service.context
-    llm = context.config.get("llm", {})
+    llm = service.context.config.get("llm", {})
+    try:
+        endpoint_scope = classify_llm_endpoint(
+            llm.get("base_url", "http://localhost:11434/v1")
+        )
+    except LLMError:
+        endpoint_scope = "invalid"
     return {
-        "applicant_name": context.applicant_name,
         "llm": {
             "enabled": bool(llm.get("enabled", False)),
             "provider": str(llm.get("provider", "local")),
             "model": str(llm.get("model", "")),
+            "endpoint_scope": endpoint_scope,
+            "remote_consent_configured": (
+                llm.get("remote_disclosure_consent", False) is True
+            ),
         },
     }
 
@@ -497,14 +513,45 @@ async def api_upload_profile_cvs(
 @router.post("/api/jobs/{job_id}/cv-draft")
 def api_generate_cv_draft(
     job_id: str,
+    payload: CvGenerationSchema | None = Body(default=None),
     service: JobTrackerService = Depends(get_application_service),
-) -> dict[str, Any]:
+) -> Any:
     try:
-        content = service.generate_cv_draft(job_id)
+        content = service.generate_cv_draft(
+            job_id,
+            remote_confirmation=(
+                payload.remote_disclosure_confirmed if payload else False
+            ),
+        )
     except RecordNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Job not found") from exc
+    except LLMError as exc:
+        status = 409 if exc.code in {
+            "llm_remote_consent_required",
+            "llm_remote_confirmation_required",
+        } else 503 if exc.code in {
+            "llm_endpoint_invalid",
+            "llm_remote_https_required",
+            "llm_remote_credential_missing",
+        } else 502
+        logger.warning(
+            "LLM request failed code=%s error_type=%s",
+            exc.code,
+            type(exc.__cause__ or exc).__name__,
+        )
+        return JSONResponse(
+            {"code": exc.code, "detail": str(exc)},
+            status_code=status,
+        )
     except Exception as exc:
-        raise HTTPException(status_code=502, detail="CV generation unavailable") from exc
+        logger.warning(
+            "LLM request failed code=llm_unavailable error_type=%s",
+            type(exc).__name__,
+        )
+        return JSONResponse(
+            {"code": "llm_unavailable", "detail": "CV generation unavailable"},
+            status_code=502,
+        )
     return {"job_id": job_id, "content": content}
 
 
@@ -541,35 +588,66 @@ def api_save_cv_draft(
     return {"job_id": job_id, "content": payload.content, "document_version_id": document_version_id}
 
 
-def create_app(service: JobTrackerService | None = None, *, api_token: str | None = None) -> FastAPI:
-    api = FastAPI(title="jobtracker web backend", docs_url=None if api_token else "/docs", redoc_url=None if api_token else "/redoc", openapi_url=None if api_token else "/openapi.json")
+def create_app(
+    service: JobTrackerService | None = None,
+    *,
+    api_token: str | None = None,
+    diagnostic: bool = False,
+) -> FastAPI:
+    api = FastAPI(
+        title="jobtracker web backend",
+        docs_url="/docs" if diagnostic else None,
+        redoc_url="/redoc" if diagnostic else None,
+        openapi_url="/openapi.json" if diagnostic else None,
+    )
     api.state.jobtracker_service = service
-    api.state.api_token = api_token
+    api.state.api_token = api_token or secrets.token_urlsafe(32)
+    api.state.diagnostic = diagnostic
     api.mount("/static", StaticFiles(directory=str(STATIC_DIR), check_dir=False), name="static")
     api.router.routes.extend(router.routes)
 
     @api.middleware("http")
     async def disable_ui_cache(request: Request, call_next) -> Response:
-        token = request.app.state.api_token
-        if token and request.url.path.startswith("/api/"):
+        def secure(response: Response) -> Response:
+            if request.url.path == "/" or request.url.path.startswith("/static/"):
+                response.headers["Cache-Control"] = "no-store, max-age=0"
+                response.headers["Pragma"] = "no-cache"
+            response.headers["X-Content-Type-Options"] = "nosniff"
+            response.headers["X-Frame-Options"] = "DENY"
+            response.headers["Referrer-Policy"] = "no-referrer"
+            response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
+            response.headers["Content-Security-Policy"] = (
+                "default-src 'self'; base-uri 'none'; "
+                "frame-ancestors 'none'; form-action 'self'"
+            )
+            return response
+
+        if request.url.path.startswith("/api/"):
+            token = request.app.state.api_token
             supplied = request.headers.get(TOKEN_HEADER, "")
             if not secrets.compare_digest(supplied, token):
-                return JSONResponse({"detail": "Unauthorized local API request"}, status_code=401)
+                return secure(
+                    JSONResponse(
+                        {"detail": "Unauthorized local API request"},
+                        status_code=401,
+                    )
+                )
             host = request.headers.get("host", "")
             origin = request.headers.get("origin", "")
-            expected = f"127.0.0.1:{request.url.port}"
-            if host != expected or origin not in {"", f"http://{expected}"}:
-                return JSONResponse({"detail": "Invalid local request origin"}, status_code=403)
-        response = await call_next(request)
-        if request.url.path == "/" or request.url.path.startswith("/static/"):
-            response.headers["Cache-Control"] = "no-store, max-age=0"
-            response.headers["Pragma"] = "no-cache"
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["X-Frame-Options"] = "DENY"
-        response.headers["Content-Security-Policy"] = "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
-        return response
+            server = request.scope.get("server")
+            port = server[1] if server else request.url.port
+            expected = "127.0.0.1" if port == 80 else f"127.0.0.1:{port}"
+            if (
+                host != expected
+                or origin not in {"", f"http://{expected}"}
+                or request.headers.get("sec-fetch-site", "") == "cross-site"
+            ):
+                return secure(
+                    JSONResponse(
+                        {"detail": "Invalid local request origin"},
+                        status_code=403,
+                    )
+                )
+        return secure(await call_next(request))
 
     return api
-
-
-app = create_app()

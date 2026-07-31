@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Optional
+import webbrowser
 
 import typer
 import yaml
@@ -12,7 +14,13 @@ from rich.table import Table
 from .application import JobTrackerService
 from .config import ensure_project_dirs, load_config
 from .doctor import SCHEMA_VERSION, DoctorFatalError, inspect_jobs
-from .llm import default_extraction, extract_job_data_with_llm, test_llm
+from .llm import (
+    LLMError,
+    classify_llm_endpoint,
+    default_extraction,
+    extract_job_data_with_llm,
+    test_llm,
+)
 from .loading import LoadJobError
 from .migration import execute_migration, preview_migration, verify_migration
 from .models import JobApplication, format_date_display, today_iso
@@ -336,13 +344,38 @@ def add(
 
     if use_ai:
         console.print()
-        console.print("[bold]Trying local LLM extraction...[/bold]")
+        remote_confirmation = False
         try:
-            extracted = extract_job_data_with_llm(job_description, config)
+            remote = classify_llm_endpoint(
+                config["llm"].get("base_url", "http://localhost:11434/v1")
+            ) == "remote"
+            if remote:
+                console.print(
+                    "[bold yellow]Remote AI will send this job description outside this device.[/bold yellow]"
+                )
+                remote_confirmation = ask_bool(
+                    "Send it to the configured remote provider?",
+                    default=False,
+                )
+                if not remote_confirmation:
+                    raise LLMError(
+                        "llm_remote_confirmation_required",
+                        "Remote disclosure was not confirmed.",
+                    )
+            else:
+                console.print("[bold]Trying local LLM extraction...[/bold]")
+            extracted = extract_job_data_with_llm(
+                job_description,
+                config,
+                remote_confirmation=remote_confirmation,
+            )
             console.print("[green]LLM extraction finished.[/green]")
-        except Exception as exc:
+        except LLMError as exc:
             console.print(f"[yellow]LLM extraction failed. Falling back to manual entry.[/yellow]")
-            console.print(f"[dim]{exc}[/dim]")
+            console.print(f"[dim]{exc.code}: {exc}[/dim]")
+        except Exception:
+            console.print("[yellow]LLM extraction failed. Falling back to manual entry.[/yellow]")
+            console.print("[dim]llm_unavailable: LLM provider is unavailable.[/dim]")
 
     confirmed = confirm_extracted_fields(extracted)
     job = JobApplication.from_metadata(confirmed)
@@ -572,13 +605,48 @@ def web(
     host: str = typer.Option("127.0.0.1", "--host", help="Host to bind."),
     port: int = typer.Option(8000, "--port", help="Port to bind."),
     reload: bool = typer.Option(False, "--reload", help="Enable auto reload."),
+    diagnostic: bool = typer.Option(
+        False,
+        "--diagnostic",
+        help="Use disposable synthetic data and enable API docs.",
+    ),
 ) -> None:
-    """Run FastAPI backend."""
+    """Run the authenticated local web app."""
+    if host != "127.0.0.1":
+        raise typer.BadParameter("Only 127.0.0.1 is supported", param_hint="--host")
+    if not 1 <= port <= 65535:
+        raise typer.BadParameter("Port must be between 1 and 65535", param_hint="--port")
+    if reload:
+        raise typer.BadParameter(
+            "Reload cannot preserve the per-process API token",
+            param_hint="--reload",
+        )
+
     try:
-        import uvicorn
+        from .desktop import _start_application, _stop_application
     except ModuleNotFoundError as exc:
         console.print("[bold red]uvicorn is not installed.[/bold red]")
         console.print("Install dependencies, then run `job web` again.")
         raise typer.Exit(code=1) from exc
 
-    uvicorn.run("jobtracker.webapp:app", host=host, port=port, reload=reload)
+    temporary: TemporaryDirectory[str] | None = TemporaryDirectory() if diagnostic else None
+    data_dir = Path(temporary.name) if temporary else AppPaths.resolve().data_dir
+    handle = None
+    try:
+        handle = _start_application(data_dir, port=port, diagnostic=diagnostic)
+        path = "/docs" if diagnostic else f"/?token={handle.api_token}"
+        url = f"http://127.0.0.1:{handle.port}{path}"
+        if not webbrowser.open(url):
+            console.print("[bold red]Could not open the local browser.[/bold red]")
+            raise typer.Exit(code=1)
+        console.print(f"Job Tracker opened at http://127.0.0.1:{handle.port}.")
+        while handle.thread.is_alive():
+            handle.thread.join(timeout=0.25)
+            if handle.errors:
+                raise RuntimeError("Local server stopped unexpectedly") from handle.errors[0]
+    except KeyboardInterrupt:
+        pass
+    finally:
+        _stop_application(handle)
+        if temporary:
+            temporary.cleanup()

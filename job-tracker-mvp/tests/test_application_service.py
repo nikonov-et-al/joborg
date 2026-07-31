@@ -19,7 +19,7 @@ from jobtracker.repositories import (
     build_application_service,
 )
 from jobtracker.services import ProjectContext, load_project_context, save_profile
-from jobtracker.webapp import create_app
+from jobtracker.webapp import TOKEN_HEADER, create_app
 
 
 class FakeReports:
@@ -163,7 +163,11 @@ class ApplicationServiceTests(unittest.TestCase):
         ):
             cli_result = CliRunner().invoke(cli.app, ["list", "--status", "applied"])
 
-        api_result = TestClient(create_app(service)).get("/api/jobs?month=2026-07")
+        api_result = TestClient(
+            create_app(service, api_token="test-token"),
+            base_url="http://127.0.0.1:8000",
+            headers={TOKEN_HEADER: "test-token"},
+        ).get("/api/jobs?month=2026-07")
 
         self.assertEqual(cli_result.exit_code, 0, cli_result.output)
         self.assertIn("Shared", cli_result.output)

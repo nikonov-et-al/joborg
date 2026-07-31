@@ -9,7 +9,15 @@ from fastapi.testclient import TestClient
 from jobtracker.models import JobApplication
 from jobtracker.repositories import build_application_service
 from jobtracker.services import ProjectContext
-from jobtracker.webapp import create_app
+from jobtracker.webapp import TOKEN_HEADER, create_app
+
+
+def _client(service) -> TestClient:
+    return TestClient(
+        create_app(service, api_token="test-token"),
+        base_url="http://127.0.0.1:8000",
+        headers={TOKEN_HEADER: "test-token"},
+    )
 
 
 def _service(root: Path):
@@ -50,7 +58,7 @@ class CvPdfApiTests(unittest.TestCase):
                 return b"%PDF-1.4\n%fake\n"
 
             service.documents._render = fake_render
-            response = TestClient(create_app(service)).post(
+            response = _client(service).post(
                 f"/api/jobs/{job_id}/cv-pdf",
                 json={"content": "# Current draft"},
             )
@@ -82,7 +90,7 @@ class CvPdfApiTests(unittest.TestCase):
                 return b"%PDF-1.4\n%fake\n"
 
             service.documents._render = fake_render
-            response = TestClient(create_app(service)).post(
+            response = _client(service).post(
                 f"/api/jobs/{job_id}/cv-pdf"
             )
 
@@ -92,7 +100,7 @@ class CvPdfApiTests(unittest.TestCase):
     def test_cv_pdf_download_validates_missing_empty_and_overflow(self) -> None:
         with TemporaryDirectory() as temp:
             service, job_id = _service(Path(temp))
-            client = TestClient(create_app(service))
+            client = _client(service)
 
             def fail_render(*args, **kwargs):
                 raise ValueError("CV content does not fit one page")

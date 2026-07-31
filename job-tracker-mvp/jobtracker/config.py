@@ -24,7 +24,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "provider": "ollama",
         "base_url": "http://localhost:11434/v1",
         "model": "gemma4:12b-it-q4_K_M",
-        "api_key": "local-not-needed",
+        "remote_disclosure_consent": False,
     },
     "export": {
         "create_docx": True,

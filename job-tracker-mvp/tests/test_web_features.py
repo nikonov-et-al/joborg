@@ -9,7 +9,7 @@ from jobtracker.services import (
     save_profile,
     store_profile_cv,
 )
-from jobtracker.webapp import STATIC_DIR, app, root
+from jobtracker.webapp import STATIC_DIR, create_app, root
 
 
 class ProfileTests(unittest.TestCase):
@@ -78,7 +78,7 @@ class ProfileTests(unittest.TestCase):
 
 class RouteTests(unittest.TestCase):
     def test_required_api_routes_exist(self) -> None:
-        paths = {route.path for route in app.routes}
+        paths = {route.path for route in create_app().routes}
         self.assertIn("/api/profile", paths)
         self.assertIn("/api/profile/cvs", paths)
         self.assertIn("/api/jobs/{job_id}/cv-draft", paths)

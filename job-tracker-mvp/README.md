@@ -222,7 +222,13 @@ job export
 job web
 ```
 
-Open `http://127.0.0.1:8000`. The web app includes:
+The command opens the authenticated page itself. Its per-process token stays in
+memory and is removed from browser history after bootstrap. The server accepts
+only `127.0.0.1`; `--host` values for wildcard, hostname, LAN, or remote binding
+are rejected. API docs are disabled in normal use. `job web --diagnostic` uses
+a disposable synthetic workspace and enables docs for local diagnosis.
+
+The web app includes:
 
 - dashboard statistics and pending interviews
 - separate add-job, all-jobs, report, and profile views
@@ -240,6 +246,7 @@ Default config uses Ollama:
 llm:
   base_url: "http://localhost:11434/v1"
   model: "gemma4:12b-it-q4_K_M"
+  remote_disclosure_consent: false
 ```
 
 Test it:
@@ -257,6 +264,12 @@ llm:
   base_url: "http://localhost:1234/v1"
   model: "your-loaded-model"
 ```
+
+Loopback endpoints need no disclosure consent. Remote endpoints must use
+HTTPS, set `remote_disclosure_consent: true`, and load their credential from
+the `JOBTRACKER_LLM_API_KEY` environment variable. Keys in YAML are ignored.
+The UI and `job add` still require confirmation immediately before profile,
+job, or document content is sent remotely.
 
 ## Commands
 

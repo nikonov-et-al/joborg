@@ -13,7 +13,15 @@ from jobtracker.models import JobApplication
 from jobtracker.repositories import build_application_service
 from jobtracker.reports import build_report_data, report_data_to_markdown, render_report_pdf
 from jobtracker.services import ProjectContext
-from jobtracker.webapp import create_app
+from jobtracker.webapp import TOKEN_HEADER, create_app
+
+
+def _client(service) -> TestClient:
+    return TestClient(
+        create_app(service, api_token="test-token"),
+        base_url="http://127.0.0.1:8000",
+        headers={TOKEN_HEADER: "test-token"},
+    )
 
 
 def _context(root: Path) -> ProjectContext:
@@ -136,7 +144,7 @@ class ReportFeatureTests(unittest.TestCase):
                 ),
                 "Description",
             )
-            client = TestClient(create_app(service))
+            client = _client(service)
             report = client.post("/api/report?month=2026-06")
             pdf = client.get("/api/report/pdf?month=2026-06")
 
@@ -171,7 +179,7 @@ class ReportFeatureTests(unittest.TestCase):
                     ),
                     "Description",
                 )
-            client = TestClient(create_app(service))
+            client = _client(service)
             all_jobs = client.post("/api/report")
             june = client.post("/api/report?month_number=06")
             year = client.post("/api/report?year=2026")

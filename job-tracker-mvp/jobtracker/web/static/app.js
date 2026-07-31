@@ -1,6 +1,6 @@
-const API = "/api";
-const apiToken = new URLSearchParams(location.search).get("token") || "";
-if (apiToken) history.replaceState(null, "", `${location.pathname}${location.hash}`);
+import { createApiClient, tokenFromLocation } from "./api-client.js";
+
+const { request, download } = createApiClient({ token: tokenFromLocation() });
 const STATUSES = [
   "draft", "applied", "confirmation_received", "interview_invited",
   "interview_done", "task_received", "offer_received", "rejected",
@@ -14,7 +14,7 @@ const MONTHS = [
 ];
 const state = {
   jobs: [], loadErrors: [], detail: null, newFiles: [], profile: null, report: null,
-  workspaces: null, storage: null, workspaceFolder: "", notice: "",
+  workspaces: null, storage: null, workspaceFolder: "", notice: "", llm: null,
 };
 const app = document.querySelector("#app");
 const apiStatus = document.querySelector("#apiStatus");
@@ -51,32 +51,6 @@ function displayDate(value = "") {
 function setStatus(text, tone = "") {
   apiStatus.textContent = text;
   apiStatus.dataset.tone = tone;
-}
-
-async function request(path, options = {}) {
-  const response = await fetch(`${API}${path}`, {
-    headers: {
-      Accept: "application/json",
-      ...(apiToken ? { "X-Jobtracker-Token": apiToken } : {}),
-      ...(options.body instanceof FormData ? {} : { "Content-Type": "application/json" }),
-      ...(options.headers || {}),
-    },
-    ...options,
-  });
-  if (!response.ok) {
-    let message = await response.text();
-    try { message = JSON.parse(message).detail || message; } catch {}
-    throw new Error(message || `${response.status} ${response.statusText}`);
-  }
-  return response.json();
-}
-
-async function download(path, filename) {
-  const response = await fetch(`${API}${path}`, { headers: apiToken ? { "X-Jobtracker-Token": apiToken } : {} });
-  if (!response.ok) throw new Error((await response.json().catch(() => ({}))).detail || "Download failed");
-  const url = URL.createObjectURL(await response.blob());
-  const anchor = Object.assign(document.createElement("a"), { href: url, download: filename });
-  document.body.append(anchor); anchor.click(); anchor.remove(); URL.revokeObjectURL(url);
 }
 
 function routeInfo() {
@@ -219,7 +193,12 @@ function renderJobsPage() {
 async function selectJob(id) {
   setStatus("Loading job…", "busy");
   try {
-    state.detail = await request(`/jobs/${encodeURIComponent(id)}`);
+    const [detail, settings] = await Promise.all([
+      request(`/jobs/${encodeURIComponent(id)}`),
+      state.llm ? Promise.resolve(null) : request("/config"),
+    ]);
+    state.detail = detail;
+    if (settings) state.llm = settings.llm;
     const target = document.querySelector("#jobDetail");
     if (!target) return;
     target.innerHTML = detailHtml(state.detail);
@@ -236,6 +215,11 @@ function detailHtml(job) {
     ["Source", job.source], ["Method", job.application_method], ["Contact", job.contact_person],
     ["Email", job.contact_email], ["Next action", job.next_action], ["Next date", displayDate(job.next_action_date)],
   ].filter(([, value]) => value);
+  const remote = state.llm?.endpoint_scope === "remote";
+  const llmBlocked = state.llm?.endpoint_scope === "invalid" || (remote && !state.llm?.remote_consent_configured);
+  const disclosure = remote
+    ? `<p class="error">Remote AI: profile, job, and document content will leave this device via ${esc(state.llm.provider)} / ${esc(state.llm.model)}.${state.llm.remote_consent_configured ? " Confirmation is required for each request." : " Enable remote_disclosure_consent in config.yml first."}</p>`
+    : state.llm?.endpoint_scope === "invalid" ? `<p class="error">AI endpoint configuration is invalid.</p>` : "";
   return `
     <div class="detail-title"><div><p class="eyebrow">Selected job</p><h2>${esc(job.company)}</h2><p>${esc(job.role)}</p></div><div class="detail-actions"><span class="pill">${label(job.status)}</span><button class="secondary" data-edit-job>Edit Job</button></div></div>
     <div class="meta-grid">${metadata.map(([key, value]) => `<div><span>${esc(key)}</span><strong>${esc(value)}</strong></div>`).join("")}</div>
@@ -252,7 +236,8 @@ function detailHtml(job) {
       <div class="attach-row"><input id="attachFiles" type="file" multiple><select id="attachCategory">${CATEGORIES.map(c => `<option value="${c}">${label(c)}</option>`).join("")}</select><button data-attach>Attach</button></div>
     </details>
     <details open><summary>Generated CV</summary>
-      <div class="actions"><button data-generate-cv>Generate CV</button><button class="secondary" data-save-cv>Save draft</button><button class="secondary" data-generate-cv-pdf>Generate PDF</button></div>
+      ${disclosure}
+      <div class="actions"><button data-generate-cv ${llmBlocked ? "disabled" : ""}>Generate CV</button><button class="secondary" data-save-cv>Save draft</button><button class="secondary" data-generate-cv-pdf>Generate PDF</button></div>
       <textarea id="cvDraft" class="cv-editor" rows="22" placeholder="Generated CV appears here.">${esc(job.cv_draft)}</textarea>
     </details>`;
 }
@@ -607,9 +592,17 @@ app.addEventListener("click", async event => {
     await selectJob(state.detail.id); return;
   }
   if (event.target.closest("[data-generate-cv]")) {
+    const remote = state.llm?.endpoint_scope === "remote";
+    const remoteConfirmed = remote && window.confirm(
+      `Send profile, job, and document content to remote ${state.llm.provider} model ${state.llm.model}?`,
+    );
+    if (remote && !remoteConfirmed) return setStatus("Remote disclosure cancelled", "bad");
     setStatus("Generating CV...", "busy");
     try {
-      const result = await request(`/jobs/${encodeURIComponent(state.detail.id)}/cv-draft`, { method: "POST" });
+      const result = await request(`/jobs/${encodeURIComponent(state.detail.id)}/cv-draft`, {
+        method: "POST",
+        body: JSON.stringify({ remote_disclosure_confirmed: remoteConfirmed }),
+      });
       document.querySelector("#cvDraft").value = result.content;
       setStatus("CV generated", "ok");
     } catch (error) { setStatus(error.message, "bad"); }
@@ -623,25 +616,10 @@ app.addEventListener("click", async event => {
   if (event.target.closest("[data-generate-cv-pdf]")) {
     setStatus("Generating PDF...", "busy");
     try {
-      const response = await fetch(`${API}/jobs/${encodeURIComponent(state.detail.id)}/cv-pdf`, {
+      await download(`/jobs/${encodeURIComponent(state.detail.id)}/cv-pdf`, "generated_cv.pdf", {
         method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "application/pdf" },
         body: JSON.stringify({ content: document.querySelector("#cvDraft").value }),
       });
-      if (!response.ok) {
-        let message = await response.text();
-        try { message = JSON.parse(message).detail || message; } catch {}
-        throw new Error(message || `${response.status} ${response.statusText}`);
-      }
-      const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.download = "generated_cv.pdf";
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      URL.revokeObjectURL(url);
       setStatus("CV PDF downloaded", "ok");
     } catch (error) {
       setStatus(error.message, "bad");

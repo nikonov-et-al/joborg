@@ -62,7 +62,7 @@ class CvPromptTests(unittest.TestCase):
                 profile={"name": "Jane Example", "skills": ["Python"]},
                 job_description="Role needs strong Python and FastAPI skills.",
                 job={"role": "Backend Engineer", "company": "Example GmbH"},
-                config={"llm": {"model": "fake-model", "base_url": "http://localhost", "api_key": "x"}},
+                config={"llm": {"model": "fake-model", "base_url": "http://localhost"}},
             )
 
         self.assertEqual(len(calls), 1)

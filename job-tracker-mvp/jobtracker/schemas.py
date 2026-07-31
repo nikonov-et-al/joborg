@@ -239,3 +239,7 @@ class CvDraftSchema(BoundaryModel):
     @classmethod
     def safe_content(cls, value: str) -> str:
         return _safe_text(value, limit=100_000)
+
+
+class CvGenerationSchema(BoundaryModel):
+    remote_disclosure_confirmed: bool = False

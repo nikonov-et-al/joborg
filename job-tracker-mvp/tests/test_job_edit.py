@@ -10,10 +10,18 @@ from fastapi.testclient import TestClient
 from jobtracker.models import JobApplication
 from jobtracker.repositories import build_application_service
 from jobtracker.services import ProjectContext
-from jobtracker.webapp import create_app
+from jobtracker.webapp import TOKEN_HEADER, create_app
 
 
 class JobEditApiTests(unittest.TestCase):
+    @staticmethod
+    def _client(service) -> TestClient:
+        return TestClient(
+            create_app(service, api_token="test-token"),
+            base_url="http://127.0.0.1:8000",
+            headers={TOKEN_HEADER: "test-token"},
+        )
+
     def _seed_job(self, root: Path):
         context = ProjectContext(
             config={"applicant": {"name": "Test User"}},
@@ -81,7 +89,7 @@ class JobEditApiTests(unittest.TestCase):
                 "note": "Edited in All Jobs",
             }
 
-            response = TestClient(create_app(service)).patch(
+            response = self._client(service).patch(
                 f"/api/jobs/{job_id}",
                 json=payload,
             )
@@ -118,7 +126,7 @@ class JobEditApiTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             _context, service, job_id = self._seed_job(Path(temp))
             original = service.get_job(job_id)
-            client = TestClient(create_app(service))
+            client = self._client(service)
             invalid_payloads = [
                 {"attachments": []},
                 {"folder": "elsewhere"},
@@ -145,7 +153,7 @@ class JobEditApiTests(unittest.TestCase):
     def test_status_and_note_payload_remains_supported(self) -> None:
         with TemporaryDirectory() as temp:
             _context, service, job_id = self._seed_job(Path(temp))
-            response = TestClient(create_app(service)).patch(
+            response = self._client(service).patch(
                 f"/api/jobs/{job_id}",
                 json={"status": "rejected", "note": "No fit"},
             )

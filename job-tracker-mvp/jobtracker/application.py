@@ -126,6 +126,7 @@ class DocumentGateway(Protocol):
         profile: dict[str, Any],
         job_description: str,
         job: dict[str, Any],
+        remote_confirmation: bool = False,
     ) -> str: ...
 
     def render_cv_pdf(self, content: str, *, job_title: str) -> bytes: ...
@@ -257,12 +258,18 @@ class JobTrackerService:
         uploaded = [self.profiles.store_profile_cv(asset) for asset in assets]
         return uploaded, self.profiles.get_profile()
 
-    def generate_cv_draft(self, job_id: str) -> str:
+    def generate_cv_draft(
+        self,
+        job_id: str,
+        *,
+        remote_confirmation: bool = False,
+    ) -> str:
         details = self.jobs.get(job_id)
         content = self.documents.generate_cv_draft(
             profile=self.profiles.get_profile(),
             job_description=details.job_description,
             job=details.job.to_metadata(),
+            remote_confirmation=remote_confirmation,
         )
         self.jobs.save_cv_draft(job_id, content)
         return content

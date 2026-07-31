@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from jobtracker.repositories import build_application_service
 from jobtracker.services import ProjectContext
-from jobtracker.webapp import create_app
+from jobtracker.webapp import TOKEN_HEADER, create_app
 
 
 STATIC_DIR = Path(__file__).parents[1] / "jobtracker" / "web" / "static"
@@ -166,7 +166,14 @@ class AddJobApiRegressionTests(unittest.TestCase):
                 database=database,
                 files_dir=root / "files",
             )
-            client = TestClient(create_app(build_application_service(context)))
+            client = TestClient(
+                create_app(
+                    build_application_service(context),
+                    api_token="test-token",
+                ),
+                base_url="http://127.0.0.1:8000",
+                headers={TOKEN_HEADER: "test-token"},
+            )
             description = "First line.\n\nSecond line with umlaut: Gr\u00fc\u00dfe."
             response = client.post(
                 "/api/jobs",

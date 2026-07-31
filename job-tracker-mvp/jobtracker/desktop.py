@@ -400,6 +400,7 @@ def _initialize_application(
     *,
     enforce_workspace: bool = False,
     api_token: str | None = None,
+    diagnostic: bool = False,
 ) -> Any:
     context = load_project_context(
         data_dir=data_dir,
@@ -411,12 +412,12 @@ def _initialize_application(
     service.list_jobs()  # Open/upgrade SQLite before showing the window.
     if not (STATIC_DIR / "index.html").is_file():
         raise RuntimeError("Bundled web UI is missing")
-    return create_app(service, api_token=api_token)
+    return create_app(service, api_token=api_token, diagnostic=diagnostic)
 
 
-def _reserve_loopback_socket() -> tuple[socket.socket, int]:
+def _reserve_loopback_socket(port: int = 0) -> tuple[socket.socket, int]:
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    listener.bind((HOST, 0))
+    listener.bind((HOST, port))
     listener.listen()
     return listener, listener.getsockname()[1]
 
@@ -455,10 +456,20 @@ class _ServerHandle:
     api_token: str
 
 
-def _start_application(data_dir: Path) -> _ServerHandle:
+def _start_application(
+    data_dir: Path,
+    *,
+    port: int = 0,
+    diagnostic: bool = False,
+) -> _ServerHandle:
     api_token = secrets.token_urlsafe(32)
-    application = _initialize_application(data_dir, enforce_workspace=True, api_token=api_token)
-    listener, port = _reserve_loopback_socket()
+    application = _initialize_application(
+        data_dir,
+        enforce_workspace=True,
+        api_token=api_token,
+        diagnostic=diagnostic,
+    )
+    listener, port = _reserve_loopback_socket(port)
     server = uvicorn.Server(
         uvicorn.Config(
             application,
