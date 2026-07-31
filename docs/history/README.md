@@ -40,6 +40,9 @@ designs, or commands that should not be run against current data. Use the root
 - [`MILESTONE_10A_PLAN.md`](MILESTONE_10A_PLAN.md) - current-tree privacy
   closure, explicit Git-state/ref scopes, and fresh unresolved shared-history
   evidence.
+- [`MILESTONE_10B_PLAN.md`](MILESTONE_10B_PLAN.md) - authenticated loopback web
+  launches, one token-aware frontend client, and explicit remote-LLM
+  disclosure controls.
 
 ## History rules
 
