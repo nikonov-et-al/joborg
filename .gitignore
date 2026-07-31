@@ -6,6 +6,8 @@
 # Local agent instructions and active planning
 /AGENTS.md
 /PLAN.md
+/docs/privacy.md
+/docs/SHARED_HISTORY_REMEDIATION_PROPOSAL.md
 
 # Job Tracker runtime data
 /job-tracker-mvp/jobs/

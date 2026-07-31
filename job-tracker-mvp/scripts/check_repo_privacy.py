@@ -20,7 +20,14 @@ GENERATED_COMPONENTS = frozenset(
 )
 FORBIDDEN_NAMES = frozenset({"config.yml"})
 FORBIDDEN_PATHS = frozenset(
-    {"agents.md", "job-tracker-mvp/report.md", "plan.md", "report.md"}
+    {
+        "agents.md",
+        "docs/privacy.md",
+        "docs/shared_history_remediation_proposal.md",
+        "job-tracker-mvp/report.md",
+        "plan.md",
+        "report.md",
+    }
 )
 ALLOWED_HIDDEN_COMPONENTS = frozenset({".github"})
 FORBIDDEN_SUFFIXES = (

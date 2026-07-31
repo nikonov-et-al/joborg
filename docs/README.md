@@ -13,16 +13,14 @@ and update without scanning obsolete plans or reverse-engineering the source.
 
 1. Active agent instructions and development plans are local and intentionally
    not tracked.
-2. [`privacy.md`](privacy.md) - repository data boundary, safe exposure
-   inventory, and history-remediation state.
-3. `architecture/` - current system boundaries, data flow, persistence, and
+2. `architecture/` - current system boundaries, data flow, persistence, and
    runtime lifecycle.
-4. `decisions/` - accepted architecture decision records and their rationale.
-5. `guides/` - task-oriented operating, development, release, migration, and
+3. `decisions/` - accepted architecture decision records and their rationale.
+4. `guides/` - task-oriented operating, development, release, migration, and
    recovery instructions.
-6. `reference/` - schemas, API contracts, configuration, terminology, and
+5. `reference/` - schemas, API contracts, configuration, terminology, and
    invariants.
-7. [`history/`](history/README.md) - completed/superseded plans retained for
+6. [`history/`](history/README.md) - completed/superseded plans retained for
    evidence. History is not current instruction.
 
 Only `history/` exists initially because it has real content. Create the other

@@ -25,6 +25,10 @@ class RepositoryPrivacyTests(unittest.TestCase):
         self.assertTrue(privacy.path_violation("report.md"))
         self.assertTrue(privacy.path_violation("AGENTS.md"))
         self.assertTrue(privacy.path_violation("PLAN.md"))
+        self.assertTrue(privacy.path_violation("docs/privacy.md"))
+        self.assertTrue(
+            privacy.path_violation("docs/SHARED_HISTORY_REMEDIATION_PROPOSAL.md")
+        )
         self.assertFalse(privacy.path_violation(".github/workflows/test.yml"))
         self.assertTrue(privacy.path_violation("resume.pdf"))
         self.assertTrue(privacy.path_violation("resume.docx"))

@@ -1,7 +1,9 @@
 # Reviewed git-filter-repo removal rules for Milestone 6.
-# Run only in the disposable rewrite clone documented in docs/privacy.md.
+# Run only in a disposable rewrite clone with a verified recovery bundle.
 literal:AGENTS.md
 literal:PLAN.md
+literal:docs/privacy.md
+literal:docs/SHARED_HISTORY_REMEDIATION_PROPOSAL.md
 literal:job-tracker-mvp/jobs
 literal:job-tracker-mvp/profile
 literal:job-tracker-mvp/reports

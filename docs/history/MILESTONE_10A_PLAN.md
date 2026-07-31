@@ -75,9 +75,8 @@ Completed: 2026-07-31
 - Authenticated hosting metadata for visibility, forks, pull requests,
   releases, and archives remained unavailable. Fresh ref evidence superseded
   the prior shared-remediation claim.
-- The unresolved rewrite/force-push work moved to
-  [`../SHARED_HISTORY_REMEDIATION_PROPOSAL.md`](../SHARED_HISTORY_REMEDIATION_PROPOSAL.md)
-  and requires explicit owner approval.
+- The unresolved rewrite/force-push work required explicit owner approval and
+  was handled separately from this historical milestone.
 - The legacy setup-bridge behavior script failed on its stale inline-script
   regex; Milestone 10A changed no setup/desktop code. Milestone 10D retains that
   behavior-test gate.
