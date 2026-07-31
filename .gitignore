@@ -1,3 +1,8 @@
+# Hidden local tool/environment directories. Keep GitHub automation trackable.
+**/.*/
+!/.github/
+!/.github/**
+
 # Job Tracker runtime data
 /job-tracker-mvp/jobs/
 /job-tracker-mvp/profile/
@@ -8,6 +13,7 @@
 /job-tracker-mvp/logs/
 /job-tracker-mvp/tmp/
 /job-tracker-mvp/config.yml
+/job-tracker-mvp/report.md
 
 # Root-level runtime/generated output
 /jobs/
@@ -19,6 +25,7 @@
 /logs/
 /tmp/
 /config.yml
+/report.md
 
 # Local data, backups, logs, and archives
 *.sqlite
@@ -42,7 +49,7 @@
 !job-tracker-mvp/tests/fixtures/**
 
 # Python/build/test output
-__pycache__/
+**/__pycache__/
 *.py[cod]
 *.egg-info/
 .pytest_cache/

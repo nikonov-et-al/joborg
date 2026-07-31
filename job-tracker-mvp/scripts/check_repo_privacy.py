@@ -13,12 +13,14 @@ from pathlib import PurePosixPath
 
 FIXTURE_ROOT = ("job-tracker-mvp", "tests", "fixtures")
 RUNTIME_COMPONENTS = frozenset(
-    {"jobs", "profile", "reports", "input", "files", "backups", "logs"}
+    {"jobs", "profile", "reports", "input", "files", "backups", "logs", "tmp"}
 )
 GENERATED_COMPONENTS = frozenset(
     {"__pycache__", ".pytest_cache", "build", "dist"}
 )
 FORBIDDEN_NAMES = frozenset({"config.yml"})
+FORBIDDEN_PATHS = frozenset({"job-tracker-mvp/report.md", "report.md"})
+ALLOWED_HIDDEN_COMPONENTS = frozenset({".github"})
 FORBIDDEN_SUFFIXES = (
     ".sqlite",
     ".sqlite3",
@@ -61,6 +63,11 @@ def path_violation(path: str) -> str | None:
     lowered = tuple(part.casefold() for part in candidate.parts)
     name = candidate.name.casefold()
 
+    if any(
+        part.startswith(".") and part not in ALLOWED_HIDDEN_COMPONENTS
+        for part in lowered[:-1]
+    ):
+        return "hidden local directory"
     if any(part in GENERATED_COMPONENTS or part.endswith(".egg-info") for part in lowered):
         return "generated path"
     if name.endswith((".pyc", ".pyo")):
@@ -71,6 +78,8 @@ def path_violation(path: str) -> str | None:
         return None
     if any(part in RUNTIME_COMPONENTS for part in lowered):
         return "runtime data path"
+    if candidate.as_posix().casefold() in FORBIDDEN_PATHS:
+        return "generated report"
     if name in FORBIDDEN_NAMES:
         return "local configuration"
     if name.endswith(FORBIDDEN_SUFFIXES):
