@@ -1,8 +1,10 @@
 # Milestone 10A Plan - Repository Privacy and Shared-Ref Closure
 
-Status: active
+Status: complete; shared-history remediation moved to separate approval gate
 
 Started: 2026-07-31
+
+Completed: 2026-07-31
 
 ## Assumptions
 
@@ -57,3 +59,25 @@ Started: 2026-07-31
 - No live-file deletion or modification.
 - No history rewrite, force-push, credential rotation, or remote mutation.
 - No new dependency or third-party scanning service.
+
+## Completion evidence
+
+- Commit `bc27ece` removed two root logs from tracking while preserving both
+  working files and their SHA-256 hashes.
+- Runtime inventory remained 73 files with unchanged path/hash aggregate
+  `52F189493081B17568DDCAF0E2288AC751E6D9CEAD017EAC86606739E39E9B1D`.
+- `python scripts/check_repo_privacy.py` passed `HEAD`, index, and staged state.
+- Focused privacy tests passed: 5 tests.
+- Full isolated Python verification passed: 179 tests and 31 subtests.
+- JavaScript syntax and Python bytecode checks passed.
+- `git fetch --prune origin` refreshed `origin/master`; the shared-ref scan
+  still found forbidden historical paths. No rewrite or remote mutation ran.
+- Authenticated hosting metadata for visibility, forks, pull requests,
+  releases, and archives remained unavailable. Fresh ref evidence superseded
+  the prior shared-remediation claim.
+- The unresolved rewrite/force-push work moved to
+  [`../SHARED_HISTORY_REMEDIATION_PROPOSAL.md`](../SHARED_HISTORY_REMEDIATION_PROPOSAL.md)
+  and requires explicit owner approval.
+- The legacy setup-bridge behavior script failed on its stale inline-script
+  regex; Milestone 10A changed no setup/desktop code. Milestone 10D retains that
+  behavior-test gate.

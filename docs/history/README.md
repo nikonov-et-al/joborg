@@ -2,7 +2,7 @@
 
 Status: historical index
 
-Last updated: 2026-07-30
+Last updated: 2026-07-31
 
 ## Purpose
 
@@ -37,6 +37,9 @@ designs, or commands that should not be run against current data. Use the root
 - [`MILESTONE_10_PLAN.md`](MILESTONE_10_PLAN.md) - hermetic verification,
   locked release inputs, safe storage diagnostics, packaged smoke testing, and
   evidence-driven performance baseline.
+- [`MILESTONE_10A_PLAN.md`](MILESTONE_10A_PLAN.md) - current-tree privacy
+  closure, explicit Git-state/ref scopes, and fresh unresolved shared-history
+  evidence.
 
 ## History rules
 
