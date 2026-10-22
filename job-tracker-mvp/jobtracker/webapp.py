@@ -474,6 +474,42 @@ def api_report_pdf(
     )
 
 
+@router.post("/api/report/pdf/save")
+def api_save_report_pdf(
+    month: str | None = None,
+    year: str | None = None,
+    month_number: str | None = None,
+    service: JobTrackerService = Depends(get_application_service),
+) -> dict[str, str]:
+    try:
+        pdf, filename = service.render_report_pdf(
+            month=month,
+            year=year,
+            month_number=month_number,
+        )
+        reports_dir = service.context.reports_dir
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        destination = reports_dir / filename
+        temporary_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="wb", dir=reports_dir, prefix=f".{filename}.", suffix=".tmp", delete=False
+            ) as temporary:
+                temporary_path = Path(temporary.name)
+                temporary.write(pdf)
+                temporary.flush()
+                os.fsync(temporary.fileno())
+            temporary_path.replace(destination)
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not save PDF report: {exc}") from exc
+    return {"path": str(destination)}
+
+
 @router.get("/api/profile")
 def api_get_profile(
     service: JobTrackerService = Depends(get_application_service),

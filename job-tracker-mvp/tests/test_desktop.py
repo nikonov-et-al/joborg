@@ -232,6 +232,22 @@ class DesktopTests(unittest.TestCase):
         for function in window._functions.values():
             self.assertIs(function.__self__, bridge)
 
+    def test_open_reports_folder_opens_active_workspace_reports_directory(self) -> None:
+        with TemporaryDirectory() as temp:
+            workspace = Path(temp)
+            bridge = desktop.WorkspaceBridge(
+                Mock(),
+                WorkspaceResolution("active", workspace),
+                handle=Mock(),
+            )
+            reports_dir = workspace / "reports"
+            with patch.object(desktop.os, "startfile", create=True) as open_folder:
+                result = bridge.open_reports_folder()
+
+            self.assertEqual(result, str(reports_dir))
+            self.assertTrue(reports_dir.is_dir())
+            open_folder.assert_called_once_with(str(reports_dir))
+
     def test_setup_bridge_runtime_behavior(self) -> None:
         node = shutil.which("node")
         if node is None and os.name == "nt":

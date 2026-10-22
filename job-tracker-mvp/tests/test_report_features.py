@@ -147,6 +147,7 @@ class ReportFeatureTests(unittest.TestCase):
             client = _client(service)
             report = client.post("/api/report?month=2026-06")
             pdf = client.get("/api/report/pdf?month=2026-06")
+            saved = client.post("/api/report/pdf/save?month=2026-06")
 
             self.assertEqual(report.status_code, 200)
             payload = report.json()
@@ -160,6 +161,11 @@ class ReportFeatureTests(unittest.TestCase):
             self.assertIn('attachment; filename="report-2026-06.pdf"', pdf.headers["content-disposition"])
             text = PdfReader(io.BytesIO(pdf.content)).pages[0].extract_text() or ""
             self.assertIn("Example Corp", text)
+            saved_path = Path(saved.json()["path"])
+            self.assertEqual(saved.status_code, 200)
+            self.assertEqual(saved_path, context.reports_dir / "report-2026-06.pdf")
+            saved_text = PdfReader(str(saved_path)).pages[0].extract_text() or ""
+            self.assertIn("Example Corp", saved_text)
 
     def test_report_api_supports_independent_period_filters_and_paths(self) -> None:
         with TemporaryDirectory() as temp:
@@ -186,6 +192,7 @@ class ReportFeatureTests(unittest.TestCase):
             june_2026 = client.post("/api/report?year=2026&month_number=06")
             legacy = client.post("/api/report?month=2026-06")
             pdf = client.get("/api/report/pdf?month_number=06")
+            saved_pdf = client.post("/api/report/pdf/save?year=2026&month_number=06")
             invalid = client.post("/api/report?month_number=13")
 
             self.assertEqual(all_jobs.json()["data"]["total"], 3)
@@ -204,6 +211,15 @@ class ReportFeatureTests(unittest.TestCase):
             )
             self.assertEqual(legacy.json()["data"]["total"], 1)
             self.assertIn('filename="report-all-years-06.pdf"', pdf.headers["content-disposition"])
+            self.assertEqual(
+                Path(saved_pdf.json()["path"]),
+                context.reports_dir / "report-2026-06.pdf",
+            )
+            saved_text = "\n".join(
+                page.extract_text() or "" for page in PdfReader(saved_pdf.json()["path"]).pages
+            )
+            self.assertIn("Beta", saved_text)
+            self.assertNotIn("Alpha", saved_text)
             self.assertEqual(invalid.status_code, 422)
 
 

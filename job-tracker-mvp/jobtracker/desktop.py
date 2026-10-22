@@ -81,6 +81,7 @@ WORKSPACE_API_METHODS = (
     "get_storage_status",
     "export_diagnostics",
     "create_workspace_export",
+    "open_reports_folder",
     "cancel_setup",
 )
 _FOLDER_PICKER_ERROR = "Folder picker could not be opened. Restart Job Tracker."
@@ -910,6 +911,17 @@ class WorkspaceBridge:
             "path": str(export),
             "message": "Verified workspace export created",
         }
+
+    def open_reports_folder(self) -> str:
+        if self.active is None:
+            raise ValueError("No active workspace")
+        reports_dir = self.active / "reports"
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            os.startfile(str(reports_dir))
+        except (AttributeError, OSError) as exc:
+            raise RuntimeError(f"Could not open report folder: {exc}") from exc
+        return str(reports_dir)
 
     def choose_workspace_folder(self) -> str:
         if self.window is None:
