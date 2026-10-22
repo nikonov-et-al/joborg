@@ -97,35 +97,6 @@ Do not commit personal job data, CVs, secrets, live databases, generated build o
 
 Legacy imports are read-only: source folders are never modified or deleted automatically. Use an isolated test data directory for migration and recovery checks.
 
-## Tests and checks
-
-From `job-tracker-mvp`:
-
-```powershell
-pip install -e ".[dev,desktop]"
-python -m pytest
-python scripts/check_repo_privacy.py
-```
-
-The test suite redirects application-data access to pytest-owned temporary storage and must not use a live Job Tracker workspace.
-
-## Documentation
-
-- [Detailed application README](job-tracker-mvp/README.md)
-- [Documentation index](docs/README.md)
-- [Recovery guide](docs/guides/recovery.md)
-- [Release guide](docs/guides/release.md)
-- [Database schema reference](docs/reference/database-schema.md)
-- [Performance baseline](docs/reference/performance-baseline.md)
-
-## Development principles
-
-- Local-first storage and explicit recovery
-- Stable IDs instead of filesystem identity
-- Domain logic separated from CLI, web, desktop, and persistence adapters
-- No speculative cloud, sync, telemetry, or framework migration
-- Small changes backed by focused and isolated tests
-
 ## License
 
 This project is licensed under the [MIT License](LICENSE). You may use,
