@@ -49,6 +49,16 @@ class WebUiFeatureTests(unittest.TestCase):
         self.assertIn(".report-bar", self.styles)
         self.assertIn(".sidebar, .main { min-width: 0; }", self.styles)
 
+    def test_report_save_shows_path_and_opens_workspace_folder(self) -> None:
+        self.assertIn('data-download-report>Save PDF report', self.app_js)
+        self.assertIn('data-open-reports>Open report folder', self.app_js)
+        self.assertIn('request(`/report/pdf/save${query ? `?${query}` : ""}`', self.app_js)
+        self.assertIn("state.reportPath = result.path", self.app_js)
+        self.assertIn("PDF report saved: ${result.path}", self.app_js)
+        self.assertIn('desktopCall("open_reports_folder")', self.app_js)
+        self.assertIn("Report saved at: ${state.reportPath}", self.app_js)
+        self.assertIn("open_reports_folder", self.app_js)
+
     def test_job_edit_form_covers_business_fields_and_preserves_existing_flows(self) -> None:
         self.assertIn('id="editJobForm"', self.app_js)
         for field in (
@@ -60,7 +70,15 @@ class WebUiFeatureTests(unittest.TestCase):
             self.assertIn(f'name="{field}"', self.app_js)
         self.assertIn('method: "PATCH"', self.app_js)
         self.assertIn("await selectJob(id)", self.app_js)
-        self.assertIn("data-save-status", self.app_js)
+        self.assertIn('data-inline-edit="${field}"', self.app_js)
+        self.assertIn('["Applied", "date_applied", job.date_applied, "date"]', self.app_js)
+        self.assertIn('["Location", "location", job.location, "text"]', self.app_js)
+        self.assertIn("data-inline-status", self.app_js)
+        self.assertIn('event.key === "Escape"', self.app_js)
+        self.assertIn('event.key === "Enter"', self.app_js)
+        self.assertIn('app.addEventListener("focusout"', self.app_js)
+        self.assertIn("secondary-metadata", self.app_js)
+        self.assertNotIn("data-save-status", self.app_js)
         self.assertIn("data-attach", self.app_js)
         self.assertIn("data-generate-cv", self.app_js)
 

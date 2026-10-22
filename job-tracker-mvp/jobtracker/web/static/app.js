@@ -14,7 +14,7 @@ const MONTHS = [
 ];
 const state = {
   jobs: [], loadErrors: [], detail: null, newFiles: [], profile: null, report: null,
-  workspaces: null, storage: null, workspaceFolder: "", notice: "", llm: null,
+  workspaces: null, storage: null, workspaceFolder: "", notice: "", llm: null, reportPath: "",
 };
 const app = document.querySelector("#app");
 const apiStatus = document.querySelector("#apiStatus");
@@ -211,9 +211,9 @@ async function selectJob(id) {
 
 function detailHtml(job) {
   const metadata = [
-    ["Applied", displayDate(job.date_applied)], ["Status date", displayDate(job.status_date)], ["Location", job.location],
-    ["Source", job.source], ["Method", job.application_method], ["Contact", job.contact_person],
-    ["Email", job.contact_email], ["Next action", job.next_action], ["Next date", displayDate(job.next_action_date)],
+    ["Status date", displayDate(job.status_date)], ["Source", job.source], ["Method", job.application_method],
+    ["Contact", job.contact_person], ["Email", job.contact_email], ["Next action", job.next_action],
+    ["Next date", displayDate(job.next_action_date)],
   ].filter(([, value]) => value);
   const remote = state.llm?.endpoint_scope === "remote";
   const llmBlocked = state.llm?.endpoint_scope === "invalid" || (remote && !state.llm?.remote_consent_configured);
@@ -221,10 +221,15 @@ function detailHtml(job) {
     ? `<p class="error">Remote AI: profile, job, and document content will leave this device via ${esc(state.llm.provider)} / ${esc(state.llm.model)}.${state.llm.remote_consent_configured ? " Confirmation is required for each request." : " Enable remote_disclosure_consent in config.yml first."}</p>`
     : state.llm?.endpoint_scope === "invalid" ? `<p class="error">AI endpoint configuration is invalid.</p>` : "";
   return `
-    <div class="detail-title"><div><p class="eyebrow">Selected job</p><h2>${esc(job.company)}</h2><p>${esc(job.role)}</p></div><div class="detail-actions"><span class="pill">${label(job.status)}</span><button class="secondary" data-edit-job>Edit Job</button></div></div>
-    <div class="meta-grid">${metadata.map(([key, value]) => `<div><span>${esc(key)}</span><strong>${esc(value)}</strong></div>`).join("")}</div>
+    <div class="detail-title"><div><p class="eyebrow">Selected job</p><h2>${esc(job.company)}</h2><p>${esc(job.role)}</p></div><div class="detail-actions"><button class="secondary" data-edit-job>Edit Job</button></div></div>
+    <div class="key-details">
+      ${[ ["Applied", "date_applied", job.date_applied, "date"], ["Location", "location", job.location, "text"] ].map(([name, field, value, type]) => `
+        <div class="key-detail"><span>${name}</span><button class="key-detail-value" type="button" data-inline-edit="${field}" data-input-type="${type}" aria-label="Edit ${name}">${esc(field === "date_applied" ? displayDate(value) : value || "Add location")}</button></div>
+      `).join("")}
+      <label class="key-detail"><span>Status</span><select class="status-select" aria-label="Status" data-inline-status>${statusOptions(job.status)}</select></label>
+    </div>
     ${job.job_url ? `<p><a href="${esc(job.job_url)}" target="_blank" rel="noreferrer">Open job posting</a></p>` : ""}
-    <div class="inline-form"><select id="detailStatus">${statusOptions(job.status)}</select><button data-save-status>Save status</button></div>
+    ${metadata.length ? `<div class="secondary-metadata">${metadata.map(([key, value]) => `<div><span>${esc(key)}:</span> ${esc(value)}</div>`).join("")}</div>` : ""}
     <details open><summary>Job description</summary><pre class="document">${esc(job.job_description)}</pre></details>
     <details><summary>Record notes / timeline</summary><pre class="document">${esc(job.body)}</pre></details>
     <details><summary>Skills</summary>
@@ -284,12 +289,12 @@ function renderReport() {
   const years = [...new Set(state.jobs.map(job => /^(\d{4})-/.exec(job.date_applied || "")?.[1]).filter(Boolean))]
     .sort((a, b) => Number(b) - Number(a));
   app.innerHTML = `
-    ${pageHead("PDF Report", "Generate report and download server PDF.")}
+    ${pageHead("PDF Report", "Generate reports and save them in your workspace.")}
     <section class="card">
       <div class="report-controls">
         <label>Month<select id="reportMonth"><option value="">All</option>${MONTHS.map((month, index) => `<option value="${String(index + 1).padStart(2, "0")}">${month}</option>`).join("")}</select></label>
         <label>Year<select id="reportYear"><option value="">All</option>${years.map(year => `<option value="${year}">${year}</option>`).join("")}</select></label>
-        <button data-report-generate>Generate report</button><button class="secondary" data-download-report>Download PDF</button>
+        <button data-report-generate>Generate report</button><button class="secondary" data-download-report>Save PDF report</button><button class="secondary" data-open-reports>Open report folder</button>
       </div>
       <div id="reportArea" class="empty">Generate report to preview it.</div>
     </section>`;
@@ -511,12 +516,27 @@ app.addEventListener("change", event => {
     renderNewFileQueue();
   }
   if (event.target.matches("[data-new-file]")) state.newFiles[Number(event.target.dataset.newFile)].category = event.target.value;
+  if (event.target.matches("[data-inline-status]")) saveInlineField("status", event.target.value);
 });
 
 app.addEventListener("click", async event => {
   if (event.target.closest("[data-download-report]")) {
-    try { await download(`/report/pdf${reportQuery() ? `?${reportQuery()}` : ""}`, "jobtracker-report.pdf"); setStatus("Report PDF downloaded", "ok"); }
+    try {
+      const query = reportQuery();
+      const result = await request(`/report/pdf/save${query ? `?${query}` : ""}`, { method: "POST" });
+      state.reportPath = result.path;
+      setStatus(`PDF report saved: ${result.path}`, "ok");
+    }
     catch (error) { setStatus(error.message, "bad"); }
+    return;
+  }
+  if (event.target.closest("[data-open-reports]")) {
+    try {
+      const path = await desktopCall("open_reports_folder");
+      setStatus(`Opened report folder: ${path}`, "ok");
+    } catch (error) {
+      setStatus(`${error.message}${state.reportPath ? ` Report saved at: ${state.reportPath}` : ""}`, "bad");
+    }
     return;
   }
   if (event.target.closest("[data-export-workspace]")) {
@@ -569,10 +589,21 @@ app.addEventListener("click", async event => {
     renderNewFileQueue();
     return;
   }
-  if (event.target.closest("[data-save-status]")) {
-    const status = document.querySelector("#detailStatus").value;
-    await request(`/jobs/${encodeURIComponent(state.detail.id)}`, { method: "PATCH", body: JSON.stringify({ status }) });
-    await loadJobs(); await selectJob(state.detail.id); return;
+  const inlineEdit = event.target.closest("[data-inline-edit]");
+  if (inlineEdit) {
+    const { inlineEdit: field, inputType } = inlineEdit.dataset;
+    const value = state.detail[field] || "";
+    const input = document.createElement("input");
+    input.type = inputType;
+    input.value = value;
+    input.className = "key-detail-input";
+    input.dataset.inlineField = field;
+    input.setAttribute("aria-label", `Edit ${field === "date_applied" ? "Applied" : "Location"}`);
+    inlineEdit.replaceWith(input);
+    input.focus();
+    if (inputType === "text") input.select();
+    else input.showPicker?.();
+    return;
   }
   if (event.target.closest("[data-edit-job]")) {
     document.querySelector("#jobDetail").innerHTML = editJobHtml(state.detail);
@@ -637,6 +668,39 @@ app.addEventListener("click", async event => {
     } catch (error) { setStatus(error.message, "bad"); }
     return;
   }
+});
+
+async function saveInlineField(field, value) {
+  if (!state.detail) return;
+  if (value === (state.detail[field] || "")) {
+    await selectJob(state.detail.id);
+    return;
+  }
+  try {
+    await request(`/jobs/${encodeURIComponent(state.detail.id)}`, { method: "PATCH", body: JSON.stringify({ [field]: value }) });
+    await loadJobs();
+    await selectJob(state.detail.id);
+  } catch (error) {
+    setStatus(error.message, "bad");
+    await selectJob(state.detail.id);
+  }
+}
+
+app.addEventListener("keydown", event => {
+  const input = event.target.closest("[data-inline-field]");
+  if (!input) return;
+  if (event.key === "Escape") {
+    event.preventDefault();
+    selectJob(state.detail.id);
+  } else if (event.key === "Enter") {
+    event.preventDefault();
+    input.blur();
+  }
+});
+
+app.addEventListener("focusout", event => {
+  const input = event.target.closest("[data-inline-field]");
+  if (input) saveInlineField(input.dataset.inlineField, input.value);
 });
 
 app.addEventListener("submit", async event => {
